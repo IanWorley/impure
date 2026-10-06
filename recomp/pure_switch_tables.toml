@@ -1,0 +1,44 @@
+# Jump tables XenonAnalyse misses because nops are interleaved with the dispatch sequence.
+# tools/recompile.sh appends these to XenonAnalyse's output. Evidence is in docs/analysis.md.
+
+# Byte offsets at 0x820BEDE8 added to 0x829FCF00. The index is masked to 6 bits, but only the
+# first nine table bytes are word-aligned case offsets; the rest is unrelated data.
+[[switch]]
+base = 0x829FCEE0
+r = 10
+default = 0x829FCF00
+labels = [
+    0x829FCF00,
+    0x829FCF0C,
+    0x829FCF18,
+    0x829FCF24,
+    0x829FCF30,
+    0x829FCF3C,
+    0x829FCF48,
+    0x829FCF54,
+    0x829FCF64,
+]
+
+# Halfword offsets at 0x8210EB20 added to 0x82BB3048; the index is a 4-bit field.
+[[switch]]
+base = 0x82BB3558
+r = 28
+default = 0x82BB3574
+labels = [
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3048,
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3048,
+    0x82BB3048,
+    0x82BB3574,
+    0x82BB3048,
+    0x82BB3048,
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3574,
+    0x82BB3574,
+]

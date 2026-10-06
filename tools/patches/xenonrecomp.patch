@@ -1,0 +1,32 @@
+diff --git a/XenonRecomp/CMakeLists.txt b/XenonRecomp/CMakeLists.txt
+index f5db6d1..47934a6 100644
+--- a/XenonRecomp/CMakeLists.txt
++++ b/XenonRecomp/CMakeLists.txt
+@@ -20,10 +20,8 @@ target_link_libraries(XenonRecomp PRIVATE
+ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+     target_compile_options(XenonRecomp PRIVATE -Wno-switch -Wno-unused-variable -Wno-null-arithmetic)
+ 
+-    # alias attribute not supported on Apple.
+-    if (NOT APPLE)
+-        target_compile_definitions(XenonRecomp PRIVATE XENON_RECOMP_USE_ALIAS)
+-    endif()
++    # The alias attribute is not supported on Apple. Never emit it, so generated code
++    # links on every target regardless of the host that ran the recompiler.
+ endif()
+ 
+ target_compile_definitions(XenonRecomp PRIVATE _CRT_SECURE_NO_WARNINGS)
+diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
+index fa91527..48f8bae 100644
+--- a/XenonRecomp/recompiler.cpp
++++ b/XenonRecomp/recompiler.cpp
+@@ -183,6 +183,10 @@ void Recompiler::Analyse()
+         fn.BeginAddress = ByteSwap(fn.BeginAddress);
+         fn.Data = ByteSwap(fn.Data);
+ 
++        // Zeroed entries pad the table; each would otherwise become a duplicate sub_0.
++        if (fn.BeginAddress == 0)
++            continue;
++
+         if (image.symbols.find(fn.BeginAddress) == image.symbols.end())
+         {
+             auto& f = functions.emplace_back();

@@ -1,0 +1,45 @@
+[package]
+name = "pure-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+description = "Rust runtime for a static recompilation of Pure (Xbox 360). Requires your own copy of the game."
+
+[features]
+# Compile and link the C++ that tools/recompile.sh generated from your own default.xex.
+# Without it the runtime builds anywhere (including CI) and only opens the window.
+recompiled = ["dep:sha2"]
+
+[dependencies]
+bevy = { version = "0.19.1", default-features = false, features = [
+    "std",
+    "multi_threaded",
+    "async_executor",
+    "bevy_log",
+    "bevy_window",
+    "bevy_winit",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_camera",
+    # X11 is loaded at run time; Wayland needs system libraries at build time, which would
+    # break cross-target checks. Wayland desktops run this through XWayland.
+    "x11",
+] }
+sha2 = { version = "0.10", optional = true }
+# Not used directly: selects blake3's pure-Rust implementation for Bevy, so no target C
+# toolchain is needed and cross-target checks work.
+blake3 = { version = "1.8", features = ["pure"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }
+
+# Bevy is slow unoptimized; keep our own code debuggable.
+[profile.dev.package."*"]
+opt-level = 2

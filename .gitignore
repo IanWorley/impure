@@ -1,0 +1,17 @@
+# Original game files and local analysis artifacts.
+/originals/
+/local/
+/build/
+/runtime/target/
+__pycache__/
+
+# Game files are never committed, wherever they end up.
+*.iso
+*.7z
+*.xex
+*.xexp
+*.bik
+*.xma
+*.xwb
+*.xsb
+*.xgs

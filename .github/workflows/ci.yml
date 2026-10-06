@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+# CI never has the game. It builds the runtime without the `recompiled` feature. The lint job
+# also checks the feature's Rust code; with CI set, build.rs skips the generated C++, so a build
+# with the feature fails to link and no workflow can produce a binary with game code by accident.
+jobs:
+  repository:
+    name: Repository checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: No game content tracked
+        run: tools/check-no-game-content.sh
+      - name: Shell scripts
+        run: shellcheck tools/*.sh
+      - name: Python tools
+        run: python3 -m py_compile tools/find_switch_functions.py
+
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --features recompiled -- -D warnings
+
+  runtime:
+    name: Runtime (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x86-64, os: ubuntu-24.04 }
+          - { name: Linux arm64, os: ubuntu-24.04-arm }
+          - { name: macOS x86-64, os: macos-15-intel }
+          - { name: macOS arm64, os: macos-15 }
+          - { name: Windows x86-64, os: windows-2025 }
+          - { name: Windows arm64, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime
+      - run: cargo build --locked
+      - run: cargo test --locked
