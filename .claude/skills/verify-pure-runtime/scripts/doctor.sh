@@ -37,7 +37,9 @@ if [[ -x "${BINARY}" ]]; then
     else
         note "binary was built WITHOUT the recompiled feature (game-free)"
     fi
-    newer="$(find "${REPO_ROOT}/runtime/src" "${REPO_ROOT}/runtime/cpp" "${REPO_ROOT}/runtime/build.rs" -newer "${BINARY}" -type f | head -1)"
+    # Regenerated C++ in local/recomp also makes the binary stale until it is rebuilt.
+    newer="$(find "${REPO_ROOT}/runtime/src" "${REPO_ROOT}/runtime/cpp" "${REPO_ROOT}/runtime/build.rs" \
+        "${REPO_ROOT}/local/recomp/ppc" -newer "${BINARY}" -type f 2>/dev/null | head -1)"
     if [[ -n "${newer}" ]]; then
         echo "FAIL  binary is stale: ${newer} changed after it was built"
         failures=$((failures + 1))
@@ -49,6 +51,12 @@ check "Xvfb installed" command -v Xvfb
 check "ImageMagick import installed" command -v import
 check "xwininfo installed" command -v xwininfo
 check "Mesa lavapipe Vulkan driver present" test -f "${LAVAPIPE_ICD}"
+# Only the input recipe sends keys, so a missing xdotool is worth knowing but not a failure.
+if command -v xdotool >/dev/null; then
+    echo "ok    xdotool installed (input recipe)"
+else
+    note "xdotool missing; the input recipe needs it (sudo apt-get install xdotool)"
+fi
 
 # run.sh records the processes it started and removes the record when it tears them down.
 for pid_file in "${REPO_ROOT}"/local/verification/*/harness.pids; do

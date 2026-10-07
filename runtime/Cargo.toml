@@ -9,7 +9,10 @@ description = "Rust runtime for a static recompilation of Pure (Xbox 360). Requi
 [features]
 # Compile and link the C++ that tools/recompile.sh generated from your own default.xex.
 # Without it the runtime builds anywhere (including CI) and only opens the window.
-recompiled = ["dep:sha2"]
+# The window shows the guest's frames through a sprite, which the game-free build does not need.
+recompiled = ["dep:sha2", "bevy/bevy_sprite", "bevy/bevy_sprite_render"]
+# Physical gamepads on Linux (other platforms always have them); needs libudev-dev to build.
+linux-gamepads = ["bevy/bevy_gilrs"]
 
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = [
@@ -27,19 +30,33 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "x11",
 ] }
 sha2 = { version = "0.10", optional = true }
+# The WGSL front end wgpu itself uses (already built for Bevy): validates translated shaders.
+naga = { version = "29", features = ["wgsl-in"] }
+# The GPU API Bevy renders with (the same build): the guest's draws run on Bevy's device.
+wgpu = { version = "29", default-features = false, features = ["wgsl"] }
 # Not used directly: selects blake3's pure-Rust implementation for Bevy, so no target C
 # toolchain is needed and cross-target checks work.
 blake3 = { version = "1.8", features = ["pure"] }
+
+# Physical gamepads through gilrs. It needs no system libraries on Windows and macOS; on Linux
+# it needs libudev's development files, so there it is the opt-in `linux-gamepads` feature.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["bevy_gilrs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Threading"] }
 
 [build-dependencies]
 cc = { version = "1.2", features = ["parallel"] }
 
 # Bevy is slow unoptimized; keep our own code debuggable.
+# The runtime itself is optimized a little too: it decodes and hashes guest textures every
+# frame, which is far too slow unoptimized.
+[profile.dev]
+opt-level = 1
+
 [profile.dev.package."*"]
 opt-level = 2

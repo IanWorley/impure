@@ -42,3 +42,1622 @@ labels = [
     0x82BB3574,
     0x82BB3574,
 ]
+
+# Inline jump tables after unchecked dispatches: the function bounds-checks the index once and
+# dispatches on it several times, and XenonAnalyse only recognizes the checked dispatch. Generated
+# by tools/find_inline_switch_tables.py; see docs/analysis.md.
+
+# Inline table after the bctr at 0x82D4E060, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4E060
+r = 11
+default = 0x82D4E0CC
+labels = [
+    0x82D4E0CC,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4E090,
+    0x82D4E09C,
+    0x82D4E0A8,
+    0x82D4E0B4,
+    0x82D4E0B4,
+]
+
+# Inline table after the bctr at 0x82D4E214, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4E214
+r = 11
+default = 0x82D4E27C
+labels = [
+    0x82D4E27C,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4DE18,
+    0x82D4E244,
+    0x82D4E254,
+    0x82D4E264,
+    0x82D4E274,
+    0x82D4E274,
+]
+
+# Inline table after the bctr at 0x82D4E748, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4E748
+r = 11
+default = 0x82D4E7A4
+labels = [
+    0x82D4E7A4,
+    0x82D4E7B0,
+    0x82D4E7B0,
+    0x82D4E7B0,
+    0x82D4E7B0,
+    0x82D4E7B0,
+    0x82D4E778,
+    0x82D4E784,
+    0x82D4E790,
+    0x82D4E79C,
+    0x82D4E79C,
+]
+
+# Inline table after the bctr at 0x82D4EF90, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4EF90
+r = 11
+default = 0x82D4EFF0
+labels = [
+    0x82D4EFF0,
+    0x82D4F008,
+    0x82D4F008,
+    0x82D4F008,
+    0x82D4F008,
+    0x82D4F008,
+    0x82D4EFC0,
+    0x82D4EFD0,
+    0x82D4EFE0,
+    0x82D4F004,
+    0x82D4F004,
+]
+
+# Inline table after the bctr at 0x82D4F348, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4F348
+r = 11
+default = 0x82D4F39C
+labels = [
+    0x82D4F39C,
+    0x82D4F3A8,
+    0x82D4F3A8,
+    0x82D4F3A8,
+    0x82D4F3A8,
+    0x82D4F3A8,
+    0x82D4F378,
+    0x82D4F384,
+    0x82D4F390,
+    0x82D4F3A8,
+    0x82D4F3A8,
+]
+
+# Inline table after the bctr at 0x82D4F4E8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4F4E8
+r = 11
+default = 0x82D4F568
+labels = [
+    0x82D4F568,
+    0x82D4F570,
+    0x82D4F570,
+    0x82D4F570,
+    0x82D4F570,
+    0x82D4F570,
+    0x82D4F518,
+    0x82D4F530,
+    0x82D4F548,
+    0x82D4F560,
+    0x82D4F560,
+]
+
+# Inline table after the bctr at 0x82D4FB8C, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D4FB8C
+r = 11
+default = 0x82D4FC04
+labels = [
+    0x82D4FC04,
+    0x82D4FC0C,
+    0x82D4FC0C,
+    0x82D4FC0C,
+    0x82D4FC0C,
+    0x82D4FC0C,
+    0x82D4FBBC,
+    0x82D4FBD0,
+    0x82D4FBE8,
+    0x82D4FBFC,
+    0x82D4FBFC,
+]
+
+# Inline table after the bctr at 0x82D5883C, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D5883C
+r = 10
+default = 0x82D588A8
+labels = [
+    0x82D588A8,
+    0x82D588EC,
+    0x82D588EC,
+    0x82D588EC,
+    0x82D588EC,
+    0x82D588EC,
+    0x82D5886C,
+    0x82D58880,
+    0x82D58894,
+    0x82D5877C,
+    0x82D5877C,
+]
+
+# Inline table after the bctr at 0x82D589AC, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D589AC
+r = 10
+default = 0x82D58A18
+labels = [
+    0x82D58A18,
+    0x82D58758,
+    0x82D58758,
+    0x82D58758,
+    0x82D58758,
+    0x82D58758,
+    0x82D589DC,
+    0x82D589F0,
+    0x82D58A04,
+    0x82D58A5C,
+    0x82D58A5C,
+]
+
+# Inline table after the bctr at 0x82D58D50, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D58D50
+r = 11
+default = 0x82D58DF0
+labels = [
+    0x82D58DF0,
+    0x82D58E34,
+    0x82D58E34,
+    0x82D58E34,
+    0x82D58E34,
+    0x82D58E34,
+    0x82D58D80,
+    0x82D58DA4,
+    0x82D58DCC,
+    0x82D58DFC,
+    0x82D58DFC,
+]
+
+# Inline table after the bctr at 0x82D58F58, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D58F58
+r = 11
+default = 0x82D59004
+labels = [
+    0x82D59004,
+    0x82D5904C,
+    0x82D5904C,
+    0x82D5904C,
+    0x82D5904C,
+    0x82D5904C,
+    0x82D58F88,
+    0x82D58FB0,
+    0x82D58FDC,
+    0x82D59010,
+    0x82D59010,
+]
+
+# Inline table after the bctr at 0x82D59EF0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D59EF0
+r = 11
+default = 0x82D59F68
+labels = [
+    0x82D59F68,
+    0x82D59F74,
+    0x82D59F74,
+    0x82D59F74,
+    0x82D59F74,
+    0x82D59F74,
+    0x82D59F20,
+    0x82D59F38,
+    0x82D59F50,
+    0x82D59F74,
+    0x82D59F74,
+]
+
+# Inline table after the bctr at 0x82D5A15C, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D5A15C
+r = 11
+default = 0x82D5A1B8
+labels = [
+    0x82D5A1B8,
+    0x82D5A1C4,
+    0x82D5A1C4,
+    0x82D5A1C4,
+    0x82D5A1C4,
+    0x82D5A1C4,
+    0x82D5A18C,
+    0x82D5A198,
+    0x82D5A1A4,
+    0x82D5A1B0,
+    0x82D5A1B0,
+]
+
+# Inline table after the bctr at 0x82D60698, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D60698
+r = 10
+default = 0x82D60758
+labels = [
+    0x82D60758,
+    0x82D607B0,
+    0x82D607B0,
+    0x82D607B0,
+    0x82D607B0,
+    0x82D607B0,
+    0x82D606C8,
+    0x82D606F8,
+    0x82D60728,
+    0x82D60574,
+    0x82D60574,
+]
+
+# Inline table after the bctr at 0x82D609B0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D609B0
+r = 11
+default = 0x82D60A1C
+labels = [
+    0x82D60A1C,
+    0x82D60A60,
+    0x82D60A60,
+    0x82D60A60,
+    0x82D60A60,
+    0x82D60A60,
+    0x82D609E0,
+    0x82D609F4,
+    0x82D60A08,
+    0x82D608F0,
+    0x82D608F0,
+]
+
+# Inline table after the bctr at 0x82D60B28, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D60B28
+r = 11
+default = 0x82D60B94
+labels = [
+    0x82D60B94,
+    0x82D60BD8,
+    0x82D60BD8,
+    0x82D60BD8,
+    0x82D60BD8,
+    0x82D60BD8,
+    0x82D60B58,
+    0x82D60B6C,
+    0x82D60B80,
+    0x82D60A68,
+    0x82D60A68,
+]
+
+# Inline table after the bctr at 0x82D60E84, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D60E84
+r = 11
+default = 0x82D60F24
+labels = [
+    0x82D60F24,
+    0x82D60F68,
+    0x82D60F68,
+    0x82D60F68,
+    0x82D60F68,
+    0x82D60F68,
+    0x82D60EB4,
+    0x82D60ED8,
+    0x82D60F00,
+    0x82D60F30,
+    0x82D60F30,
+]
+
+# Inline table after the bctr at 0x82D610A8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D610A8
+r = 11
+default = 0x82D6116C
+labels = [
+    0x82D6116C,
+    0x82D611BC,
+    0x82D611BC,
+    0x82D611BC,
+    0x82D611BC,
+    0x82D611BC,
+    0x82D610D8,
+    0x82D61108,
+    0x82D6113C,
+    0x82D61178,
+    0x82D61178,
+]
+
+# Inline table after the bctr at 0x82D616CC, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D616CC
+r = 9
+default = 0x82D61750
+labels = [
+    0x82D61750,
+    0x82D6175C,
+    0x82D6175C,
+    0x82D6175C,
+    0x82D6175C,
+    0x82D6175C,
+    0x82D616FC,
+    0x82D61714,
+    0x82D61730,
+    0x82D61748,
+    0x82D61748,
+]
+
+# Inline table after the bctr at 0x82D61810, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D61810
+r = 9
+default = 0x82D6188C
+labels = [
+    0x82D6188C,
+    0x82D61898,
+    0x82D61898,
+    0x82D61898,
+    0x82D61898,
+    0x82D61898,
+    0x82D61840,
+    0x82D61858,
+    0x82D61874,
+    0x82D6160C,
+    0x82D6160C,
+]
+
+# Inline table after the bctr at 0x82D61A1C, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D61A1C
+r = 11
+default = 0x82D61A94
+labels = [
+    0x82D61A94,
+    0x82D61A9C,
+    0x82D61A9C,
+    0x82D61A9C,
+    0x82D61A9C,
+    0x82D61A9C,
+    0x82D61A4C,
+    0x82D61A60,
+    0x82D61A78,
+    0x82D61A8C,
+    0x82D61A8C,
+]
+
+# Inline table after the bctr at 0x82D61EEC, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D61EEC
+r = 11
+default = 0x82D61F60
+labels = [
+    0x82D61F60,
+    0x82D61F74,
+    0x82D61F74,
+    0x82D61F74,
+    0x82D61F74,
+    0x82D61F74,
+    0x82D61F1C,
+    0x82D61F2C,
+    0x82D61F40,
+    0x82D61F50,
+    0x82D61F50,
+]
+
+# Inline table after the bctr at 0x82D622C8, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D622C8
+r = 9
+default = 0x82D6234C
+labels = [
+    0x82D6234C,
+    0x82D62358,
+    0x82D62358,
+    0x82D62358,
+    0x82D62358,
+    0x82D62358,
+    0x82D622F8,
+    0x82D62310,
+    0x82D6232C,
+    0x82D62344,
+    0x82D62344,
+]
+
+# Inline table after the bctr at 0x82D6240C, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D6240C
+r = 9
+default = 0x82D62490
+labels = [
+    0x82D62490,
+    0x82D6249C,
+    0x82D6249C,
+    0x82D6249C,
+    0x82D6249C,
+    0x82D6249C,
+    0x82D6243C,
+    0x82D62454,
+    0x82D62470,
+    0x82D62488,
+    0x82D62488,
+]
+
+# Inline table after the bctr at 0x82D62B54, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D62B54
+r = 10
+default = 0x82D62C2C
+labels = [
+    0x82D62C2C,
+    0x82D62C40,
+    0x82D62C40,
+    0x82D62C40,
+    0x82D62C40,
+    0x82D62C40,
+    0x82D62B84,
+    0x82D62BBC,
+    0x82D62BF4,
+    0x82D629E0,
+    0x82D629E0,
+]
+
+# Inline table after the bctr at 0x82D63090, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D63090
+r = 10
+default = 0x82D630EC
+labels = [
+    0x82D630EC,
+    0x82D630F8,
+    0x82D630F8,
+    0x82D630F8,
+    0x82D630F8,
+    0x82D630F8,
+    0x82D630C0,
+    0x82D630CC,
+    0x82D630D8,
+    0x82D630E4,
+    0x82D630E4,
+]
+
+# Inline table after the bctr at 0x82D634B0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D634B0
+r = 11
+default = 0x82D63520
+labels = [
+    0x82D63520,
+    0x82D6356C,
+    0x82D6356C,
+    0x82D6356C,
+    0x82D6356C,
+    0x82D6356C,
+    0x82D634E0,
+    0x82D634F4,
+    0x82D6350C,
+    0x82D633F0,
+    0x82D633F0,
+]
+
+# Inline table after the bctr at 0x82D72B6C, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D72B6C
+r = 9
+default = 0x82D72BD8
+labels = [
+    0x82D72BD8,
+    0x82D72BEC,
+    0x82D72BEC,
+    0x82D72BEC,
+    0x82D72BEC,
+    0x82D72BEC,
+    0x82D72B9C,
+    0x82D72BAC,
+    0x82D72BC0,
+    0x82D72BD0,
+    0x82D72BD0,
+]
+
+# Inline table after the bctr at 0x82D85F44, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D85F44
+r = 10
+default = 0x82D85FA8
+labels = [
+    0x82D85FA8,
+    0x82D85FBC,
+    0x82D85FBC,
+    0x82D85FBC,
+    0x82D85FBC,
+    0x82D85FBC,
+    0x82D85F74,
+    0x82D85F84,
+    0x82D85F98,
+    0x82D85FB8,
+    0x82D85FB8,
+]
+
+# Inline table after the bctr at 0x82D8D560, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D8D560
+r = 10
+default = 0x82D8D5DC
+labels = [
+    0x82D8D5DC,
+    0x82D8D5F0,
+    0x82D8D5F0,
+    0x82D8D5F0,
+    0x82D8D5F0,
+    0x82D8D5F0,
+    0x82D8D590,
+    0x82D8D5A4,
+    0x82D8D5BC,
+    0x82D8D5D0,
+    0x82D8D5D0,
+]
+
+# Inline table after the bctr at 0x82D8E21C, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82D8E21C
+r = 9
+default = 0x82D8E294
+labels = [
+    0x82D8E294,
+    0x82D8E2CC,
+    0x82D8E2CC,
+    0x82D8E2CC,
+    0x82D8E2CC,
+    0x82D8E2CC,
+    0x82D8E24C,
+    0x82D8E264,
+    0x82D8E27C,
+    0x82D8E29C,
+    0x82D8E29C,
+]
+
+# Inline table after the bctr at 0x82D93644, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D93644
+r = 11
+default = 0x82D936BC
+labels = [
+    0x82D936BC,
+    0x82D936CC,
+    0x82D936CC,
+    0x82D936CC,
+    0x82D936CC,
+    0x82D936CC,
+    0x82D93674,
+    0x82D93688,
+    0x82D936A0,
+    0x82D936B4,
+    0x82D936B4,
+]
+
+# Inline table after the bctr at 0x82D93844, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D93844
+r = 11
+default = 0x82D938BC
+labels = [
+    0x82D938BC,
+    0x82D938C8,
+    0x82D938C8,
+    0x82D938C8,
+    0x82D938C8,
+    0x82D938C8,
+    0x82D93874,
+    0x82D93888,
+    0x82D938A0,
+    0x82D938B4,
+    0x82D938B4,
+]
+
+# Inline table after the bctr at 0x82D940A4, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D940A4
+r = 10
+default = 0x82D94100
+labels = [
+    0x82D94100,
+    0x82D94110,
+    0x82D94110,
+    0x82D94110,
+    0x82D94110,
+    0x82D94110,
+    0x82D940D4,
+    0x82D940E0,
+    0x82D940EC,
+    0x82D940F8,
+    0x82D940F8,
+]
+
+# Inline table after the bctr at 0x82D9A6DC, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D9A6DC
+r = 11
+default = 0x82D9A754
+labels = [
+    0x82D9A754,
+    0x82D9A764,
+    0x82D9A764,
+    0x82D9A764,
+    0x82D9A764,
+    0x82D9A764,
+    0x82D9A70C,
+    0x82D9A720,
+    0x82D9A738,
+    0x82D9A74C,
+    0x82D9A74C,
+]
+
+# Inline table after the bctr at 0x82D9A8F0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82D9A8F0
+r = 11
+default = 0x82D9A968
+labels = [
+    0x82D9A968,
+    0x82D9A974,
+    0x82D9A974,
+    0x82D9A974,
+    0x82D9A974,
+    0x82D9A974,
+    0x82D9A920,
+    0x82D9A934,
+    0x82D9A94C,
+    0x82D9A960,
+    0x82D9A960,
+]
+
+# Inline table after the bctr at 0x82D9C698, indexed by r24 (bounded by an earlier cmplwi r24,10).
+[[switch]]
+base = 0x82D9C698
+r = 24
+default = 0x82D9C710
+labels = [
+    0x82D9C710,
+    0x82D9C718,
+    0x82D9C718,
+    0x82D9C718,
+    0x82D9C718,
+    0x82D9C718,
+    0x82D9C6C8,
+    0x82D9C6DC,
+    0x82D9C6F4,
+    0x82D9C708,
+    0x82D9C708,
+]
+
+# Inline table after the bctr at 0x82D9D0C4, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82D9D0C4
+r = 10
+default = 0x82D9D120
+labels = [
+    0x82D9D120,
+    0x82D9D130,
+    0x82D9D130,
+    0x82D9D130,
+    0x82D9D130,
+    0x82D9D130,
+    0x82D9D0F4,
+    0x82D9D100,
+    0x82D9D10C,
+    0x82D9D118,
+    0x82D9D118,
+]
+
+# Inline table after the bctr at 0x82DA18AC, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA18AC
+r = 11
+default = 0x82DA1924
+labels = [
+    0x82DA1924,
+    0x82DA1934,
+    0x82DA1934,
+    0x82DA1934,
+    0x82DA1934,
+    0x82DA1934,
+    0x82DA18DC,
+    0x82DA18F0,
+    0x82DA1908,
+    0x82DA191C,
+    0x82DA191C,
+]
+
+# Inline table after the bctr at 0x82DA1AC0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA1AC0
+r = 11
+default = 0x82DA1B38
+labels = [
+    0x82DA1B38,
+    0x82DA1B44,
+    0x82DA1B44,
+    0x82DA1B44,
+    0x82DA1B44,
+    0x82DA1B44,
+    0x82DA1AF0,
+    0x82DA1B04,
+    0x82DA1B1C,
+    0x82DA1B30,
+    0x82DA1B30,
+]
+
+# Inline table after the bctr at 0x82DA2FC4, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DA2FC4
+r = 10
+default = 0x82DA3020
+labels = [
+    0x82DA3020,
+    0x82DA3030,
+    0x82DA3030,
+    0x82DA3030,
+    0x82DA3030,
+    0x82DA3030,
+    0x82DA2FF4,
+    0x82DA3000,
+    0x82DA300C,
+    0x82DA3018,
+    0x82DA3018,
+]
+
+# Inline table after the bctr at 0x82DA604C, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA604C
+r = 11
+default = 0x82DA60C4
+labels = [
+    0x82DA60C4,
+    0x82DA60D4,
+    0x82DA60D4,
+    0x82DA60D4,
+    0x82DA60D4,
+    0x82DA60D4,
+    0x82DA607C,
+    0x82DA6090,
+    0x82DA60A8,
+    0x82DA60BC,
+    0x82DA60BC,
+]
+
+# Inline table after the bctr at 0x82DA6260, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA6260
+r = 11
+default = 0x82DA62D8
+labels = [
+    0x82DA62D8,
+    0x82DA62E4,
+    0x82DA62E4,
+    0x82DA62E4,
+    0x82DA62E4,
+    0x82DA62E4,
+    0x82DA6290,
+    0x82DA62A4,
+    0x82DA62BC,
+    0x82DA62D0,
+    0x82DA62D0,
+]
+
+# Inline table after the bctr at 0x82DA757C, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DA757C
+r = 10
+default = 0x82DA75DC
+labels = [
+    0x82DA75DC,
+    0x82DA75EC,
+    0x82DA75EC,
+    0x82DA75EC,
+    0x82DA75EC,
+    0x82DA75EC,
+    0x82DA75AC,
+    0x82DA75B8,
+    0x82DA75C4,
+    0x82DA75D0,
+    0x82DA75D0,
+]
+
+# Inline table after the bctr at 0x82DA9D3C, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA9D3C
+r = 11
+default = 0x82DA9DB4
+labels = [
+    0x82DA9DB4,
+    0x82DA9DC4,
+    0x82DA9DC4,
+    0x82DA9DC4,
+    0x82DA9DC4,
+    0x82DA9DC4,
+    0x82DA9D6C,
+    0x82DA9D80,
+    0x82DA9D98,
+    0x82DA9DAC,
+    0x82DA9DAC,
+]
+
+# Inline table after the bctr at 0x82DA9F50, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DA9F50
+r = 11
+default = 0x82DA9FC8
+labels = [
+    0x82DA9FC8,
+    0x82DA9FD4,
+    0x82DA9FD4,
+    0x82DA9FD4,
+    0x82DA9FD4,
+    0x82DA9FD4,
+    0x82DA9F80,
+    0x82DA9F94,
+    0x82DA9FAC,
+    0x82DA9FC0,
+    0x82DA9FC0,
+]
+
+# Inline table after the bctr at 0x82DAAC18, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DAAC18
+r = 11
+default = 0x82DAAC90
+labels = [
+    0x82DAAC90,
+    0x82DAAC98,
+    0x82DAAC98,
+    0x82DAAC98,
+    0x82DAAC98,
+    0x82DAAC98,
+    0x82DAAC48,
+    0x82DAAC5C,
+    0x82DAAC74,
+    0x82DAAC88,
+    0x82DAAC88,
+]
+
+# Inline table after the bctr at 0x82DAAEB4, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DAAEB4
+r = 10
+default = 0x82DAAF0C
+labels = [
+    0x82DAAF0C,
+    0x82DAAF1C,
+    0x82DAAF1C,
+    0x82DAAF1C,
+    0x82DAAF1C,
+    0x82DAAF1C,
+    0x82DAAEE4,
+    0x82DAAEEC,
+    0x82DAAEF8,
+    0x82DAAF04,
+    0x82DAAF04,
+]
+
+# Inline table after the bctr at 0x82DAC438, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DAC438
+r = 11
+default = 0x82DAC48C
+labels = [
+    0x82DAC48C,
+    0x82DAC4DC,
+    0x82DAC4DC,
+    0x82DAC4DC,
+    0x82DAC4DC,
+    0x82DAC4DC,
+    0x82DAC468,
+    0x82DAC474,
+    0x82DAC468,
+    0x82DAC480,
+    0x82DAC480,
+]
+
+# Inline table after the bctr at 0x82DAD194, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82DAD194
+r = 9
+default = 0x82DAD200
+labels = [
+    0x82DAD200,
+    0x82DACBA0,
+    0x82DACBA0,
+    0x82DACBA0,
+    0x82DACBA0,
+    0x82DACBA0,
+    0x82DAD1C4,
+    0x82DAD1D4,
+    0x82DAD1E8,
+    0x82DAD1F8,
+    0x82DAD1F8,
+]
+
+# Inline table after the bctr at 0x82DAD544, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DAD544
+r = 10
+default = 0x82DAD5C8
+labels = [
+    0x82DAD5C8,
+    0x82DAD5D4,
+    0x82DAD5D4,
+    0x82DAD5D4,
+    0x82DAD5D4,
+    0x82DAD5D4,
+    0x82DAD574,
+    0x82DAD590,
+    0x82DAD5AC,
+    0x82DAD5D8,
+    0x82DAD5D8,
+]
+
+# Inline table after the bctr at 0x82DAF8D0, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DAF8D0
+r = 11
+default = 0x82DAF9A8
+labels = [
+    0x82DAF9A8,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF900,
+    0x82DAF918,
+    0x82DAF934,
+    0x82DAF94C,
+    0x82DAF94C,
+]
+
+# Inline table after the bctr at 0x82DAFA14, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DAFA14
+r = 11
+default = 0x82DAFA84
+labels = [
+    0x82DAFA84,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAF9B4,
+    0x82DAFA44,
+    0x82DAFA58,
+    0x82DAFA70,
+    0x82DAFA8C,
+    0x82DAFA8C,
+]
+
+# Inline table after the bctr at 0x82DB2190, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB2190
+r = 11
+default = 0x82DB2208
+labels = [
+    0x82DB2208,
+    0x82DB23D4,
+    0x82DB23D4,
+    0x82DB23D4,
+    0x82DB23D4,
+    0x82DB23D4,
+    0x82DB21C0,
+    0x82DB21D8,
+    0x82DB21F0,
+    0x82DB2214,
+    0x82DB2214,
+]
+
+# Inline table after the bctr at 0x82DB2324, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DB2324
+r = 10
+default = 0x82DB23B4
+labels = [
+    0x82DB23B4,
+    0x82DB23C4,
+    0x82DB23C4,
+    0x82DB23C4,
+    0x82DB23C4,
+    0x82DB23C4,
+    0x82DB2354,
+    0x82DB2374,
+    0x82DB2394,
+    0x82DB1F54,
+    0x82DB1F54,
+]
+
+# Inline table after the bctr at 0x82DB5DE8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB5DE8
+r = 11
+default = 0x82DB5E60
+labels = [
+    0x82DB5E60,
+    0x82DB5EB4,
+    0x82DB5EB4,
+    0x82DB5EB4,
+    0x82DB5EB4,
+    0x82DB5EB4,
+    0x82DB5E18,
+    0x82DB5E30,
+    0x82DB5E48,
+    0x82DB5E68,
+    0x82DB5E68,
+]
+
+# Inline table after the bctr at 0x82DB65B8, indexed by r10 (bounded by an earlier cmplwi r10,10).
+[[switch]]
+base = 0x82DB65B8
+r = 10
+default = 0x82DB6644
+labels = [
+    0x82DB6644,
+    0x82DB6658,
+    0x82DB6658,
+    0x82DB6658,
+    0x82DB6658,
+    0x82DB6658,
+    0x82DB65E8,
+    0x82DB6604,
+    0x82DB6620,
+    0x82DB663C,
+    0x82DB663C,
+]
+
+# Inline table after the bctr at 0x82DB6B14, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB6B14
+r = 11
+default = 0x82DB6CEC
+labels = [
+    0x82DB6CEC,
+    0x82DB6CF8,
+    0x82DB6CF8,
+    0x82DB6CF8,
+    0x82DB6CF8,
+    0x82DB6CF8,
+    0x82DB6B44,
+    0x82DB6B50,
+    0x82DB6B5C,
+    0x82DB6B68,
+    0x82DB6B68,
+]
+
+# Inline table after the bctr at 0x82DB9068, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB9068
+r = 11
+default = 0x82DB90EC
+labels = [
+    0x82DB90EC,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB9098,
+    0x82DB90B4,
+    0x82DB90D0,
+    0x82DB90F8,
+    0x82DB90F8,
+]
+
+# Inline table after the bctr at 0x82DB9194, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB9194
+r = 11
+default = 0x82DB91EC
+labels = [
+    0x82DB91EC,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB8F04,
+    0x82DB91C4,
+    0x82DB91CC,
+    0x82DB91D4,
+    0x82DB91DC,
+    0x82DB91DC,
+]
+
+# Inline table after the bctr at 0x82DB9BA4, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DB9BA4
+r = 11
+default = 0x82DB9C04
+labels = [
+    0x82DB9C04,
+    0x82DB9C10,
+    0x82DB9C10,
+    0x82DB9C10,
+    0x82DB9C10,
+    0x82DB9C10,
+    0x82DB9BD4,
+    0x82DB9BE0,
+    0x82DB9BF0,
+    0x82DB9BFC,
+    0x82DB9BFC,
+]
+
+# Inline table after the bctr at 0x82DBA720, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DBA720
+r = 11
+default = 0x82DBA780
+labels = [
+    0x82DBA780,
+    0x82DBA78C,
+    0x82DBA78C,
+    0x82DBA78C,
+    0x82DBA78C,
+    0x82DBA78C,
+    0x82DBA750,
+    0x82DBA75C,
+    0x82DBA76C,
+    0x82DBA778,
+    0x82DBA778,
+]
+
+# Inline table after the bctr at 0x82DBB66C, indexed by r27 (bounded by an earlier cmplwi r27,10).
+[[switch]]
+base = 0x82DBB66C
+r = 27
+default = 0x82DBB6E4
+labels = [
+    0x82DBB6E4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB69C,
+    0x82DBB6B0,
+    0x82DBB6C8,
+    0x82DBB6DC,
+    0x82DBB6DC,
+]
+
+# Inline table after the bctr at 0x82DBB704, indexed by r27 (bounded by an earlier cmplwi r27,10).
+[[switch]]
+base = 0x82DBB704
+r = 27
+default = 0x82DBB774
+labels = [
+    0x82DBB774,
+    0x82DBB734,
+    0x82DBB744,
+    0x82DBB754,
+    0x82DBB764,
+    0x82DBB764,
+    0x82DBB774,
+    0x82DBB774,
+    0x82DBB774,
+    0x82DBB774,
+    0x82DBB774,
+]
+
+# Inline table after the bctr at 0x82DBB788, indexed by r27 (bounded by an earlier cmplwi r27,10).
+[[switch]]
+base = 0x82DBB788
+r = 27
+default = 0x82DBB7F8
+labels = [
+    0x82DBB7F8,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB7B8,
+    0x82DBB7CC,
+    0x82DBB7E4,
+    0x82DBB800,
+    0x82DBB800,
+]
+
+# Inline table after the bctr at 0x82DBB860, indexed by r27 (bounded by an earlier cmplwi r27,10).
+[[switch]]
+base = 0x82DBB860
+r = 27
+default = 0x82DBB8C8
+labels = [
+    0x82DBB8C8,
+    0x82DBB890,
+    0x82DBB898,
+    0x82DBB8A0,
+    0x82DBB8A8,
+    0x82DBB8A8,
+    0x82DBB8C8,
+    0x82DBB8C8,
+    0x82DBB8C8,
+    0x82DBB8C8,
+    0x82DBB8C8,
+]
+
+# Inline table after the bctr at 0x82DBB8DC, indexed by r27 (bounded by an earlier cmplwi r27,10).
+[[switch]]
+base = 0x82DBB8DC
+r = 27
+default = 0x82DBB938
+labels = [
+    0x82DBB938,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB9D4,
+    0x82DBB90C,
+    0x82DBB918,
+    0x82DBB924,
+    0x82DBB930,
+    0x82DBB930,
+]
+
+# Inline table after the bctr at 0x82DBCFD8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DBCFD8
+r = 11
+default = 0x82DBD054
+labels = [
+    0x82DBD054,
+    0x82DBD060,
+    0x82DBD060,
+    0x82DBD060,
+    0x82DBD060,
+    0x82DBD060,
+    0x82DBD008,
+    0x82DBD020,
+    0x82DBD03C,
+    0x82DBD060,
+    0x82DBD060,
+]
+
+# Inline table after the bctr at 0x82DBD2BC, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DBD2BC
+r = 11
+default = 0x82DBD334
+labels = [
+    0x82DBD334,
+    0x82DBD340,
+    0x82DBD340,
+    0x82DBD340,
+    0x82DBD340,
+    0x82DBD340,
+    0x82DBD2EC,
+    0x82DBD18C,
+    0x82DBD310,
+    0x82DBD340,
+    0x82DBD340,
+]
+
+# Inline table after the bctr at 0x82DBD460, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DBD460
+r = 11
+default = 0x82DBD4B8
+labels = [
+    0x82DBD4B8,
+    0x82DBD4C4,
+    0x82DBD4C4,
+    0x82DBD4C4,
+    0x82DBD4C4,
+    0x82DBD4C4,
+    0x82DBD490,
+    0x82DBD49C,
+    0x82DBD4AC,
+    0x82DBD4C4,
+    0x82DBD4C4,
+]
+
+# Inline table after the bctr at 0x82DC0488, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DC0488
+r = 11
+default = 0x82DC0548
+labels = [
+    0x82DC0548,
+    0x82DC05A4,
+    0x82DC05A4,
+    0x82DC05A4,
+    0x82DC05A4,
+    0x82DC05A4,
+    0x82DC04B8,
+    0x82DC04E8,
+    0x82DC0518,
+    0x82DC0364,
+    0x82DC0364,
+]
+
+# Inline table after the bctr at 0x82DC07E8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DC07E8
+r = 11
+default = 0x82DC0864
+labels = [
+    0x82DC0864,
+    0x82DC0870,
+    0x82DC0870,
+    0x82DC0870,
+    0x82DC0870,
+    0x82DC0870,
+    0x82DC0818,
+    0x82DC0830,
+    0x82DC084C,
+    0x82DC0870,
+    0x82DC0870,
+]
+
+# Inline table after the bctr at 0x82DC94C0, indexed by r29 (bounded by an earlier cmplwi r29,10).
+[[switch]]
+base = 0x82DC94C0
+r = 29
+default = 0x82DC954C
+labels = [
+    0x82DC954C,
+    0x82DC955C,
+    0x82DC955C,
+    0x82DC955C,
+    0x82DC955C,
+    0x82DC955C,
+    0x82DC94F0,
+    0x82DC950C,
+    0x82DC9528,
+    0x82DC9544,
+    0x82DC9544,
+]
+
+# Inline table after the bctr at 0x82DC99CC, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DC99CC
+r = 11
+default = 0x82DC9A48
+labels = [
+    0x82DC9A48,
+    0x82DC9A60,
+    0x82DC9A60,
+    0x82DC9A60,
+    0x82DC9A60,
+    0x82DC9A60,
+    0x82DC99FC,
+    0x82DC9A10,
+    0x82DC9A28,
+    0x82DC9A3C,
+    0x82DC9A3C,
+]
+
+# Inline table after the bctr at 0x82DCF124, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DCF124
+r = 11
+default = 0x82DCF180
+labels = [
+    0x82DCF180,
+    0x82DCF18C,
+    0x82DCF18C,
+    0x82DCF18C,
+    0x82DCF18C,
+    0x82DCF18C,
+    0x82DCF154,
+    0x82DCF160,
+    0x82DCF16C,
+    0x82DCF178,
+    0x82DCF178,
+]
+
+# Inline table after the bctr at 0x82DDD598, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DDD598
+r = 11
+default = 0x82DDD608
+labels = [
+    0x82DDD608,
+    0x82DDD650,
+    0x82DDD650,
+    0x82DDD650,
+    0x82DDD650,
+    0x82DDD650,
+    0x82DDD5C8,
+    0x82DDD5DC,
+    0x82DDD5F4,
+    0x82DDD4E0,
+    0x82DDD4E0,
+]
+
+# Inline table after the bctr at 0x82DDDAD4, indexed by r6 (bounded by an earlier cmplwi r6,10).
+[[switch]]
+base = 0x82DDDAD4
+r = 6
+default = 0x82DDDB88
+labels = [
+    0x82DDDB88,
+    0x82DDDC0C,
+    0x82DDDC0C,
+    0x82DDDC0C,
+    0x82DDDC0C,
+    0x82DDDC0C,
+    0x82DDDB04,
+    0x82DDDB30,
+    0x82DDDB5C,
+    0x82DDD9D0,
+    0x82DDD9D0,
+]
+
+# Inline table after the bctr at 0x82DEE1AC, indexed by r6 (bounded by an earlier cmplwi r6,10).
+[[switch]]
+base = 0x82DEE1AC
+r = 6
+default = 0x82DEE25C
+labels = [
+    0x82DEE25C,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE1DC,
+    0x82DEE1E8,
+    0x82DEE1F4,
+    0x82DEE200,
+    0x82DEE200,
+]
+
+# Inline table after the bctr at 0x82DEE2C8, indexed by r6 (bounded by an earlier cmplwi r6,10).
+[[switch]]
+base = 0x82DEE2C8
+r = 6
+default = 0x82DEE340
+labels = [
+    0x82DEE340,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE2F8,
+    0x82DEE30C,
+    0x82DEE324,
+    0x82DEE338,
+    0x82DEE338,
+]
+
+# Inline table after the bctr at 0x82DEE3F0, indexed by r6 (bounded by an earlier cmplwi r6,10).
+[[switch]]
+base = 0x82DEE3F0
+r = 6
+default = 0x82DEE460
+labels = [
+    0x82DEE460,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE268,
+    0x82DEE420,
+    0x82DEE434,
+    0x82DEE44C,
+    0x82DEE468,
+    0x82DEE468,
+]
+
+# Inline table after the bctr at 0x82DEEA88, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82DEEA88
+r = 9
+default = 0x82DEEB08
+labels = [
+    0x82DEEB08,
+    0x82DEE9C8,
+    0x82DEE9C8,
+    0x82DEE9C8,
+    0x82DEE9C8,
+    0x82DEE9C8,
+    0x82DEEAB8,
+    0x82DEEAD0,
+    0x82DEEAE8,
+    0x82DEEB00,
+    0x82DEEB00,
+]
+
+# Inline table after the bctr at 0x82DEED34, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82DEED34
+r = 9
+default = 0x82DEEDE4
+labels = [
+    0x82DEEDE4,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEED64,
+    0x82DEED70,
+    0x82DEED7C,
+    0x82DEED88,
+    0x82DEED88,
+]
+
+# Inline table after the bctr at 0x82DEEE50, indexed by r9 (bounded by an earlier cmplwi r9,10).
+[[switch]]
+base = 0x82DEEE50
+r = 9
+default = 0x82DEEED0
+labels = [
+    0x82DEEED0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEDF0,
+    0x82DEEE80,
+    0x82DEEE98,
+    0x82DEEEB0,
+    0x82DEEEC8,
+    0x82DEEEC8,
+]
+
+# Inline table after the bctr at 0x82DF01D8, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DF01D8
+r = 11
+default = 0x82DF0248
+labels = [
+    0x82DF0248,
+    0x82DF0298,
+    0x82DF0298,
+    0x82DF0298,
+    0x82DF0298,
+    0x82DF0298,
+    0x82DF0208,
+    0x82DF021C,
+    0x82DF0234,
+    0x82DF0114,
+    0x82DF0114,
+]
+
+# Inline table after the bctr at 0x82DF05A4, indexed by r11 (bounded by an earlier cmplwi r11,10).
+[[switch]]
+base = 0x82DF05A4
+r = 11
+default = 0x82DF0658
+labels = [
+    0x82DF0658,
+    0x82DF06AC,
+    0x82DF06AC,
+    0x82DF06AC,
+    0x82DF06AC,
+    0x82DF06AC,
+    0x82DF05D4,
+    0x82DF0600,
+    0x82DF062C,
+    0x82DF0668,
+    0x82DF0668,
+]

@@ -2,9 +2,12 @@
 //! default.xex, the glue in cpp/, and XenonUtils' XEX loader into one static library.
 //! Nothing here contains game code; the generated sources live in the ignored local/ tree.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 const GENERATED_DIR_ENV: &str = "PURE_RECOMP_DIR";
 const XENON_RECOMP_DIR_ENV: &str = "XENON_RECOMP_DIR";
@@ -16,11 +19,16 @@ const GENERATED_SOURCE_PREFIX: &str = "ppc_recomp.";
 const IMPORT_PREFIX: &str = "__imp__";
 const RECOMPILED_FUNCTION_PREFIX: &str = "__imp__sub_";
 const LIBRARY_NAME: &str = "pure_guest";
-// Generated code is huge; unoptimized builds are slow and need far deeper host stacks.
+// Generated code is huge; unoptimized builds are slow and need far deeper host stacks. The XEX
+// loader (decryption, LZX decompression) and glue use it too, or every debug launch spends over
+// half a minute unpacking the executable.
 const GENERATED_OPT_LEVEL: u32 = 2;
 const OBJECT_CACHE_DIR: &str = "objects";
-const STAMP_FILE: &str = "stamp.txt";
-const OBJECT_LIST_FILE: &str = "objects.txt";
+const MANIFEST_FILE: &str = "manifest.tsv";
+/// cc names each object `<hash of the source directory>-<source stem>.o`.
+const OBJECT_SUFFIX: &str = ".o";
+const OBJECT_NAME_SEPARATOR: char = '-';
+const SOURCE_SUFFIX: &str = ".cpp";
 /// Set by GitHub Actions and most other CI services.
 const CI_ENV: &str = "CI";
 
@@ -125,9 +133,12 @@ fn import_forwarders(generated_dir: &Path) -> String {
     source
 }
 
-/// The generated sources only change when tools/recompile.sh runs again, so their objects are
-/// reused until the file list, sizes, or timestamps change. They are cached beside the sources
-/// rather than in OUT_DIR, which Cargo replaces whenever this package's dependencies change.
+/// The generated sources only change when tools/recompile.sh runs again, and a rerun after a
+/// recompiler fix changes only some of them, so each file's object is cached on its own. A file
+/// whose size and timestamp match the manifest is not even read; otherwise its contents are
+/// hashed, and only a file whose contents changed is recompiled. Objects are cached beside the
+/// sources rather than in OUT_DIR, which Cargo replaces whenever this package's dependencies
+/// change. The hash is only stable within one Rust toolchain; a new one recompiles once.
 fn compile_generated(target: &Target, generated_dir: &Path, thirdparty: &Path) -> Vec<PathBuf> {
     let mut sources: Vec<PathBuf> = fs::read_dir(generated_dir)
         .unwrap()
@@ -144,47 +155,161 @@ fn compile_generated(target: &Target, generated_dir: &Path, thirdparty: &Path) -
         .join("..")
         .join(OBJECT_CACHE_DIR)
         .join(env::var("TARGET").unwrap());
-    let stamp_path = objects_dir.join(STAMP_FILE);
-    let object_list_path = objects_dir.join(OBJECT_LIST_FILE);
-    let stamp: String = sources
-        .iter()
-        .map(|source| {
-            let metadata = fs::metadata(source).unwrap();
-            format!(
-                "{} {} {:?}\n",
-                source.display(),
-                metadata.len(),
-                metadata.modified().unwrap()
-            )
+    fs::create_dir_all(&objects_dir).unwrap();
+    let manifest_path = objects_dir.join(MANIFEST_FILE);
+    let previous: HashMap<String, CachedObject> = fs::read_to_string(&manifest_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(CachedObject::parse)
+        .map(|cached| (cached.source.clone(), cached))
+        .collect();
+
+    // Objects already in the directory but missing from the manifest (from a build before the
+    // manifest existed, or one that was interrupted) are reused if newer than their source.
+    let existing_objects: HashMap<String, PathBuf> = fs::read_dir(&objects_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?;
+            let source_stem = name
+                .strip_suffix(OBJECT_SUFFIX)?
+                .split_once(OBJECT_NAME_SEPARATOR)?
+                .1;
+            Some((format!("{source_stem}{SOURCE_SUFFIX}"), path))
         })
         .collect();
 
-    if fs::read_to_string(&stamp_path).is_ok_and(|previous| previous == stamp) {
-        return fs::read_to_string(&object_list_path)
-            .unwrap()
-            .lines()
-            .map(PathBuf::from)
-            .collect();
+    let mut entries: Vec<Option<CachedObject>> = Vec::with_capacity(sources.len());
+    let mut stale: Vec<(usize, Fingerprint)> = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        let name = source.file_name().unwrap().to_string_lossy().into_owned();
+        let metadata = fs::metadata(source).unwrap();
+        let stat = (metadata.len(), modified_nanos(&metadata));
+        let cached = previous.get(&name).filter(|cached| cached.object.exists());
+        if let Some(cached) = cached.filter(|cached| (cached.size, cached.modified) == stat) {
+            entries.push(Some(cached.clone()));
+            continue;
+        }
+        let content_hash = hash_file(source);
+        let fingerprint = Fingerprint {
+            name,
+            size: stat.0,
+            modified: stat.1,
+            content_hash,
+        };
+        let reusable = cached
+            .filter(|cached| cached.content_hash == content_hash)
+            .map(|cached| cached.object.clone())
+            .or_else(|| {
+                let object = existing_objects.get(&fingerprint.name)?;
+                let object_modified = modified_nanos(&fs::metadata(object).ok()?);
+                (object_modified > fingerprint.modified).then(|| object.clone())
+            });
+        match reusable {
+            Some(object) => entries.push(Some(fingerprint.with_object(object))),
+            None => {
+                entries.push(None);
+                stale.push((index, fingerprint));
+            }
+        }
     }
 
-    fs::create_dir_all(&objects_dir).unwrap();
-    let objects = target
-        .cpp_build()
-        .include(generated_dir)
-        .include(thirdparty.join("simde"))
-        .files(&sources)
-        .out_dir(&objects_dir)
-        .opt_level(GENERATED_OPT_LEVEL)
-        .debug(false)
-        .compile_intermediates();
+    if !stale.is_empty() {
+        println!(
+            "cargo:warning=compiling {} of {} generated sources",
+            stale.len(),
+            sources.len()
+        );
+        let objects = target
+            .cpp_build()
+            .include(generated_dir)
+            .include(thirdparty.join("simde"))
+            .files(stale.iter().map(|(index, _)| &sources[*index]))
+            .out_dir(&objects_dir)
+            .debug(false)
+            .compile_intermediates();
+        // cc returns one object per file, in the order the files were given.
+        for ((index, fingerprint), object) in stale.into_iter().zip(objects) {
+            entries[index] = Some(fingerprint.with_object(object));
+        }
+    }
 
-    let object_list: String = objects
-        .iter()
-        .map(|object| format!("{}\n", object.display()))
-        .collect();
-    fs::write(&object_list_path, object_list).unwrap();
-    fs::write(&stamp_path, stamp).unwrap();
-    objects
+    let entries: Vec<CachedObject> = entries.into_iter().map(Option::unwrap).collect();
+    let manifest: String = entries.iter().map(CachedObject::line).collect();
+    fs::write(&manifest_path, manifest).unwrap();
+    entries.into_iter().map(|cached| cached.object).collect()
+}
+
+/// What identifies a generated source's contents.
+struct Fingerprint {
+    name: String,
+    size: u64,
+    modified: u128,
+    content_hash: u64,
+}
+
+impl Fingerprint {
+    fn with_object(self, object: PathBuf) -> CachedObject {
+        CachedObject {
+            source: self.name,
+            size: self.size,
+            modified: self.modified,
+            content_hash: self.content_hash,
+            object,
+        }
+    }
+}
+
+/// One manifest line: a source's name, size, timestamp and content hash, and its object.
+#[derive(Clone)]
+struct CachedObject {
+    source: String,
+    size: u64,
+    modified: u128,
+    content_hash: u64,
+    object: PathBuf,
+}
+
+impl CachedObject {
+    const SEPARATOR: char = '\t';
+
+    fn parse(line: &str) -> Option<Self> {
+        let mut fields = line.split(Self::SEPARATOR);
+        Some(Self {
+            source: fields.next()?.to_string(),
+            size: fields.next()?.parse().ok()?,
+            modified: fields.next()?.parse().ok()?,
+            content_hash: u64::from_str_radix(fields.next()?, 16).ok()?,
+            object: PathBuf::from(fields.next()?),
+        })
+    }
+
+    fn line(&self) -> String {
+        let separator = Self::SEPARATOR;
+        format!(
+            "{}{separator}{}{separator}{}{separator}{:016x}{separator}{}\n",
+            self.source,
+            self.size,
+            self.modified,
+            self.content_hash,
+            self.object.display()
+        )
+    }
+}
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+    metadata
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}
+
+fn hash_file(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    fs::read(path).unwrap().hash(&mut hasher);
+    hasher.finish()
 }
 
 struct Target {
@@ -218,6 +343,7 @@ impl Target {
 
     fn common_build(&self) -> cc::Build {
         let mut build = cc::Build::new();
+        build.opt_level(GENERATED_OPT_LEVEL);
         // Third-party and generated code: warnings are not actionable here.
         build.flag(if self.msvc { "/w" } else { "-w" });
         if self.x86_64 {

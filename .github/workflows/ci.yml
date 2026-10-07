@@ -29,7 +29,7 @@ jobs:
       - name: Shell scripts
         run: shellcheck tools/*.sh
       - name: Python tools
-        run: python3 -m py_compile tools/find_switch_functions.py
+        run: python3 -m py_compile tools/find_switch_functions.py tools/find_inline_switch_tables.py
 
   lint:
     name: Format and lint

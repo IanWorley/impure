@@ -11,7 +11,7 @@ The immediate goal is to reconstruct and verify the game's behavior. Reproducing
 There are two tracks:
 
 - **Analysis.** `tools/decompile.sh` turns your own `default.xex` into Ghidra pseudo-C, written locally to `local/decomp/`.
-- **Static recompilation.** `tools/recompile.sh` translates your `default.xex` into C++ with XenonRecomp, written locally to `local/recomp/`. The Rust runtime in `runtime/`, built on Bevy, links that code and runs the game's entry point. No kernel or Xam import is implemented yet, so the game stops at its first import call.
+- **Static recompilation.** `tools/recompile.sh` translates your `default.xex` into C++ with XenonRecomp, written locally to `local/recomp/`. The Rust runtime in `runtime/`, built on Bevy, links that code and provides the console underneath it: memory, threads and synchronization, files from your disc directory, a stand-in GPU command processor, and audio and system services. The game boots, loads its assets, runs its main loop, responds to the keyboard and a gamepad as a controller, and creates and loads its save. Its draws run on the GPU through wgpu, with multisampling, depth and stencil, so its start-up screens, title screen, menus and loading screens appear in the window. Audio is silent.
 
 The runtime builds for macOS, Windows and Linux on x86-64 and arm64. Without your copy of the game, it builds with no game code at all.
 

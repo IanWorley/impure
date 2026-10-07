@@ -5,7 +5,7 @@ description: Drive the Pure (Xbox 360) static-recompilation runtime — the Rust
 
 # Verify the Pure runtime
 
-The user-facing surface is `pure-runtime <path/to/default.xex> [--exit-on-stop]`: a Bevy window titled `Pure (static recompilation)` that loads the user's own executable, runs the game's entry point on a guest thread, and logs every kernel/Xam import call. Today the guest stops at its first unimplemented import (`NtAllocateVirtualMemory` from `0x829c60a8`); as imports get implemented, that stop point moves later, and the proof is how far the guest gets. Secondary surfaces are `tools/recompile.sh` and `tools/check-no-game-content.sh` (plain CLIs, see the feature map).
+The user-facing surface is `pure-runtime <path/to/default.xex> [--exit-on-stop]`: a Bevy window titled `Pure (static recompilation)` that loads the user's own executable and runs the game on guest threads against the runtime's kernel, Xam, GPU-command, audio and file imports. Today the game boots into its main loop and presents frames at 60 per second; nothing is drawn yet and audio is silent. An unimplemented import still stops the calling guest thread with a stop line, so new work is proven by the main loop surviving (or a stop line moving later). Secondary surfaces are `tools/recompile.sh` and `tools/check-no-game-content.sh` (plain CLIs, see the feature map).
 
 **Legal boundary, non-negotiable:** evidence goes only to `local/verification/` (ignored by Git). Never commit, upload, or paste into a PR anything from `originals/`, `local/recomp/`, or a binary built with `recompiled`. Logs and screenshots may be quoted in conversation; the generated C++ may not.
 
@@ -23,7 +23,7 @@ Prerequisites the build needs: `originals/disc/default.xex` with the recorded SH
 
 To verify the game-free build, use a separate target directory so it does not overwrite the recompiled binary (which would cost a relink): `CARGO_TARGET_DIR=../local/verification/target-gamefree cargo build`, then point the harness at it with `PURE_RUNTIME_BINARY`.
 
-Ready signal: the harness waits for the log line `guest stopped:` (every run ends in one today: an import stop, a hash rejection, or the game-free notice). Teardown is automatic: the harness kills only the Xvfb and runtime it started, on any exit.
+Ready signal: by default the harness waits for the log line `guest stopped:` (a hash rejection, the game-free notice, or an unimplemented import). The game itself now keeps running, so drive it with `VERIFY_RUN_SECONDS=<n>`: the harness runs that long, and a stop or exit before then is the outcome. Teardown is automatic: the harness kills only the Xvfb and runtime it started, on any exit.
 
 ## Doctor
 
@@ -49,7 +49,7 @@ Run from the repo root (relative runtime arguments resolve there). It:
 
 1. Picks the first free display in `:100`–`:199`, starts `Xvfb` at 1280x720, waits for `xdpyinfo`.
 2. Starts the binary with `VK_ICD_FILENAMES` (lavapipe), `WGPU_BACKEND=vulkan` and `NO_COLOR=1`.
-3. Waits (default 120 s, `VERIFY_TIMEOUT_SECONDS`) for `guest stopped:` or the runtime exiting.
+3. Waits for `guest stopped:` or the runtime exiting: up to `VERIFY_TIMEOUT_SECONDS` (default 120), or exactly `VERIFY_RUN_SECONDS` when set.
 4. Waits 3 s, checks the window by title with `xwininfo`, screenshots the root window.
 5. Writes `summary.txt` and prints it, then tears down.
 
@@ -57,8 +57,12 @@ Stable handles to assert on (all in `runtime.log`):
 
 - `pure_runtime::guest: entry point 0x82254d60, stack top …, PCR …` — guest thread started.
 - `import: variable <Name> -> 0x…(zero-filled)` — one per kernel data export (13 today).
-- `import: <Name>(r3=…, r4=…, r5=…, r6=…) from 0x…` — an import call with its arguments and caller.
+- `import: <Name>(r3=…, r4=…, r5=…, r6=…) from 0x…` — an unimplemented import call with its arguments and caller, logged just before its stop line.
 - `pure_runtime::status: guest stopped: <reason>` (`unimplemented import <Name> called from 0x…` for an import) — the first stop reason; it is also echoed in `summary.txt` as `stop line:`.
+- `video: first frame presented (1280x720)` and `video: <N> frames presented` every 600 frames — echoed in `summary.txt` as `frames presented:`.
+- `thread: created 0x…`, `thread: 0x… is named "…"`, `audio: client …`, `video: ring buffer …`, `user: profile settings requested: …` — subsystem milestones at info level.
+
+Implemented import calls are logged at debug level under `import` (with the calling guest thread); file opens and reads under `file`, GPU packets under `gpu` (`trace` for every packet and register write). Enable them with `RUST_LOG`, for example `RUST_LOG=info,import=debug,file=debug`, which `run.sh` passes through.
 - `guest stopped: indirect call to 0x…, which has no recompiled function (return address 0x…)` — the guest called a code address with no recompiled function.
 
 Isolation: concurrent runs are safe. Each gets its own display, process, and evidence directory; guest memory is a private per-process reservation; the game files are only read. Do not drive a runtime you did not start (e.g. one the user has open on their desktop).
@@ -71,7 +75,7 @@ Each run writes `local/verification/<UTC timestamp>-<label>/`:
 
 - `summary.txt` — label, binary, arguments, display, commit (marked dirty if the tree is), outcome, window present/absent, runtime exit status, stop reason.
 - `runtime.log` — full stdout/stderr of the runtime.
-- `screenshot.png` — the whole display after the stop. With no window manager the window fills the screen; today it is solid `#0D0D14` (the runtime's clear colour), which proves the renderer presented frames. Check with `identify -verbose screenshot.png | grep -A2 Histogram`.
+- `screenshot.png` — the whole display after the stop. With no window manager the window fills the screen; for the recompiled game it shows the game's last presented frame (black during the intro video), and for the game-free build the runtime's clear colour `#0D0D14`. Check with `convert screenshot.png -format %c histogram:info:-`. It is derived from the game, so never commit it.
 - `xvfb.log`.
 
 Proof standards:
@@ -79,7 +83,7 @@ Proof standards:
 - Drive the real binary with the real executable. Do not call `guest::start` from a test, add test-only flags, or patch the guest to reach a state.
 - Capture the action and the resulting state. For an import you implemented, prove it ran (its log line), then prove what it changed: the guest gets past it, so the stop line moves to a later import or caller. Quote both the old and new stop line.
 - Check side effects too, not just the window. The runtime currently writes no files; if a change makes it write any (saves, caches), list them in the proof.
-- `runtime exit: still running (stopped by harness)` is normal: a stopped guest thread parks, and the window stays open until the harness kills it.
+- `runtime exit: still running (stopped by harness)` is normal: the game runs (or a stopped guest thread parks) until the harness kills it.
 - Record the commit from `summary.txt`. A dirty-tree run proves the working tree, not a commit.
 
 ## Cleanup

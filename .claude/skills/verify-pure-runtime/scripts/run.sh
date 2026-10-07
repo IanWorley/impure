@@ -1,23 +1,30 @@
 #!/usr/bin/env bash
 # Runs the Pure runtime once on a private headless X display and captures evidence:
-# the runtime log, a screenshot of the display after the guest stops, and a summary.
+# the runtime log, a screenshot of the display, and a summary.
 #
 #   run.sh <label> [runtime arguments...]
-#   run.sh boot ../originals/disc/default.xex
+#   run.sh boot originals/disc/default.xex
+#   VERIFY_RUN_SECONDS=60 run.sh boot originals/disc/default.xex
 #
-# Environment: PURE_RUNTIME_BINARY (default runtime/target/debug/pure-runtime),
-# VERIFY_TIMEOUT_SECONDS (default 120). Evidence goes to local/verification/<timestamp>-<label>/.
+# By default the run ends when the guest stops (or VERIFY_TIMEOUT_SECONDS, default 120, pass).
+# With VERIFY_RUN_SECONDS the guest is expected to keep running: the run lasts that long, and a
+# stop or exit before then is the outcome. PURE_RUNTIME_BINARY overrides the binary (default
+# runtime/target/debug/pure-runtime). Evidence goes to local/verification/<timestamp>-<label>/.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 readonly REPO_ROOT
 readonly BINARY="${PURE_RUNTIME_BINARY:-${REPO_ROOT}/runtime/target/debug/pure-runtime}"
 readonly TIMEOUT_SECONDS="${VERIFY_TIMEOUT_SECONDS:-120}"
+readonly RUN_SECONDS="${VERIFY_RUN_SECONDS:-}"
 readonly FIRST_DISPLAY=100
 readonly LAST_DISPLAY=199
 readonly SCREEN_GEOMETRY="1280x720x24"
 readonly WINDOW_TITLE="Pure (static recompilation)"
 readonly STOP_LINE="guest stopped:"
+# The runtime logs "first frame presented" once and "<N> frames presented" every 600 frames.
+readonly FRAMES_LINE="frames presented"
+readonly FIRST_FRAME_LINE="first frame presented"
 readonly LAVAPIPE_ICD="/usr/share/vulkan/icd.d/lvp_icd.json"
 # Bevy renders a few frames after the stop is logged; give the clear colour time to reach the screen.
 readonly SETTLE_SECONDS=3
@@ -77,8 +84,14 @@ DISPLAY="${display}" VK_ICD_FILENAMES="${LAVAPIPE_ICD}" WGPU_BACKEND=vulkan NO_C
 runtime_pid=$!
 echo "${runtime_pid}" >>"${PID_FILE}"
 
-outcome="timeout after ${TIMEOUT_SECONDS}s"
-for ((waited = 0; waited < TIMEOUT_SECONDS; waited++)); do
+if [[ -n "${RUN_SECONDS}" ]]; then
+    wait_seconds="${RUN_SECONDS}"
+    outcome="still running after ${RUN_SECONDS}s"
+else
+    wait_seconds="${TIMEOUT_SECONDS}"
+    outcome="timeout after ${TIMEOUT_SECONDS}s"
+fi
+for ((waited = 0; waited < wait_seconds; waited++)); do
     if grep -q "${STOP_LINE}" "${EVIDENCE_DIR}/runtime.log"; then
         outcome="guest stopped"
         break
@@ -108,6 +121,11 @@ fi
     echo "window: ${window}"
     echo "runtime exit: ${exit_status}"
     echo "stop line: $(grep -m1 "${STOP_LINE}" "${EVIDENCE_DIR}/runtime.log" | sed 's/.*guest stopped: //' || true)"
+    frames="$(grep "${FRAMES_LINE}" "${EVIDENCE_DIR}/runtime.log" | grep -v "${FIRST_FRAME_LINE}" | tail -1 | grep -oE '[0-9]+ frames presented' | cut -d' ' -f1 || true)"
+    if [[ -z "${frames}" ]] && grep -q "${FIRST_FRAME_LINE}" "${EVIDENCE_DIR}/runtime.log"; then
+        frames="at least 1"
+    fi
+    echo "frames presented: ${frames:-0}"
 } >>"${EVIDENCE_DIR}/summary.txt"
 
 cat "${EVIDENCE_DIR}/summary.txt"

@@ -136,16 +136,21 @@ uint32_t pure_guest_load(const uint8_t* xex, size_t xex_size, uint8_t* base)
     return uint32_t(image.entry_point);
 }
 
-// Runs a guest function to completion on the calling host thread.
-void pure_guest_run(uint8_t* base, uint32_t function, uint32_t stack_top, uint32_t pcr)
+// Runs a guest function with two arguments to completion on the calling host thread, and
+// returns its result (r3).
+uint32_t pure_guest_run(uint8_t* base, uint32_t function, uint32_t stack_top, uint32_t pcr,
+    uint32_t argument0, uint32_t argument1)
 {
     PPCContext ctx{};
     ctx.r1.u64 = stack_top;
+    ctx.r3.u64 = argument0;
+    ctx.r4.u64 = argument1;
     ctx.r13.u64 = pcr;
     ctx.fpscr.loadFromHost();
 
     PPCFunc* host = PPC_LOOKUP_FUNC(base, function);
     host(ctx, base);
+    return ctx.r3.u32;
 }
 
 // Register access for import handlers, which see the context as an opaque pointer.
@@ -169,6 +174,11 @@ uint64_t pure_ctx_argument(const PPCContext* ctx, uint32_t index)
 void pure_ctx_set_return(PPCContext* ctx, uint64_t value)
 {
     ctx->r3.u64 = value;
+}
+
+uint32_t pure_ctx_stack_pointer(const PPCContext* ctx)
+{
+    return ctx->r1.u32;
 }
 
 uint32_t pure_ctx_return_address(const PPCContext* ctx)
