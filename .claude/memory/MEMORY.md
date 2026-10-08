@@ -1,0 +1,2 @@
+- [Reconstruction language](reconstruction-language-cpp.md) — decomp C++; recomp = XenonRecomp C++ + Rust/Bevy runtime; full Rust deferred
+- [Runtime milestones](runtime-milestones.md) — status 2026-10-08: hang fixed and proven (7,200 s skill run); tutorial world renders; playing deferred to a GPU machine (user chose stop)
