@@ -14,6 +14,7 @@ const XENON_RECOMP_DIR_ENV: &str = "XENON_RECOMP_DIR";
 const DEFAULT_GENERATED_DIR: &str = "../local/recomp/ppc";
 const DEFAULT_XENON_RECOMP_DIR: &str = "../local/tools/XenonRecomp";
 const GLUE_SOURCE: &str = "cpp/glue.cpp";
+const PATCHES_SOURCE: &str = "cpp/patches.cpp";
 const MAPPING_SOURCE: &str = "ppc_func_mapping.cpp";
 const GENERATED_SOURCE_PREFIX: &str = "ppc_recomp.";
 const IMPORT_PREFIX: &str = "__imp__";
@@ -62,6 +63,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", generated_dir.display());
     println!("cargo:rerun-if-changed={GLUE_SOURCE}");
+    println!("cargo:rerun-if-changed={PATCHES_SOURCE}");
 
     let imports_source = out_dir.join("imports.cpp");
     fs::write(&imports_source, import_forwarders(&generated_dir)).unwrap();
@@ -89,6 +91,7 @@ fn main() {
         .include(thirdparty.join("TinySHA1"))
         .define("NOMINMAX", None)
         .file(manifest_dir.join(GLUE_SOURCE))
+        .file(manifest_dir.join(PATCHES_SOURCE))
         .file(&imports_source)
         .files(
             [

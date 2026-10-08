@@ -28,6 +28,8 @@ pub mod registers {
     pub const PA_SC_WINDOW_SCISSOR_BR: u32 = 0x2082;
     pub const VGT_INDX_OFFSET: u32 = 0x2102;
     pub const RB_COLOR_MASK: u32 = 0x2104;
+    /// The blend constant: red, then green, blue and alpha, as floats.
+    pub const RB_BLEND_RED: u32 = 0x2105;
     pub const RB_STENCILREFMASK: u32 = 0x210D;
     /// Followed by X offset, Y scale, Y offset, Z scale and Z offset, as floats.
     pub const PA_CL_VPORT_XSCALE: u32 = 0x210F;

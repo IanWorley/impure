@@ -15,6 +15,15 @@ use crate::memory::GUEST_ADDRESS_SPACE_SIZE;
 /// The guest mapping's host base, recorded when the guest starts.
 static GUEST_BASE: AtomicUsize = AtomicUsize::new(0);
 const REPORTED_SIGNALS: [libc::c_int; 2] = [libc::SIGSEGV, libc::SIGBUS];
+/// The lookup table holds an 8-byte host function pointer per 4-byte guest instruction.
+const LOOKUP_BYTES_PER_GUEST_BYTE: usize = 2;
+
+unsafe extern "C" {
+    // The lookup table's layout, from cpp/glue.cpp.
+    static pure_lookup_table_offset: u64;
+    static pure_code_base: u32;
+    static pure_code_size: u32;
+}
 
 /// Installs the handler; `guest_base` lets it translate faulting addresses.
 pub fn install(guest_base: *mut u8) {
@@ -61,6 +70,21 @@ fn symbolize(address: usize) -> String {
     }
 }
 
+/// The guest address an indirect call was making, when `address` is where its unchecked lookup
+/// lands outside the table: generated code reads the host function for `target` at
+/// `table + (target - code base) * 2`, with 32-bit wrapping of the subtraction.
+fn indirect_call_target(address: usize, base: usize) -> Option<u32> {
+    // SAFETY: constants defined in cpp/glue.cpp and never written.
+    let (table_offset, code_base, code_size) =
+        unsafe { (pure_lookup_table_offset, pure_code_base, pure_code_size) };
+    let offset = address.checked_sub(base + table_offset as usize)?;
+    let table_size = code_size as usize * LOOKUP_BYTES_PER_GUEST_BYTE;
+    let reach = GUEST_ADDRESS_SPACE_SIZE * LOOKUP_BYTES_PER_GUEST_BYTE;
+    (table_size..reach)
+        .contains(&offset)
+        .then(|| code_base.wrapping_add((offset / LOOKUP_BYTES_PER_GUEST_BYTE) as u32))
+}
+
 extern "C" fn report(signal: libc::c_int, info: *mut libc::siginfo_t, context: *mut libc::c_void) {
     // SAFETY: the kernel passes a valid siginfo for SA_SIGINFO handlers.
     let address = unsafe { (*info).si_addr() } as usize;
@@ -72,9 +96,12 @@ extern "C" fn report(signal: libc::c_int, info: *mut libc::siginfo_t, context: *
             || "outside guest memory".to_string(),
             |offset| format!("guest {offset:#010x}"),
         );
+    let call = indirect_call_target(address, base).map_or_else(String::new, |target| {
+        format!(", past the lookup table: an indirect call to {target:#010x}?")
+    });
     let thread = std::thread::current();
     eprintln!(
-        "host crash: signal {signal} on thread {:?} at host {address:#x} ({guest}), instruction {}\n{}",
+        "host crash: signal {signal} on thread {:?} at host {address:#x} ({guest}{call}), instruction {}\n{}",
         thread.name().unwrap_or("unnamed"),
         symbolize(instruction_pointer(context)),
         Backtrace::force_capture()

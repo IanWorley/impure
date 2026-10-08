@@ -249,7 +249,10 @@ fn interrupt_loop(environment: ThreadEnvironment, pending: Receiver<u32>) -> ! {
             Ok(cpu) => dispatch_interrupt(environment, COMMAND_PROCESSOR_SOURCE, cpu),
             Err(RecvTimeoutError::Timeout) => {
                 next_vertical_blank += VERTICAL_BLANK_PERIOD;
-                COMMAND_PROCESSOR.lock().unwrap().mark_vertical_blank();
+                COMMAND_PROCESSOR
+                    .lock()
+                    .unwrap()
+                    .mark_vertical_blank(guest::memory());
                 dispatch_interrupt(environment, VERTICAL_BLANK_SOURCE, VERTICAL_BLANK_CPU);
             }
             Err(RecvTimeoutError::Disconnected) => unreachable!("the sender lives in a static"),
@@ -312,6 +315,7 @@ pub(super) fn enable_ring_buffer_read_pointer_writeback(call: &ImportCall) -> u3
             "ring buffer read pointer write-back to physical {physical:#010x}, which the title did not allocate"
         ));
     };
+    info!(target: "video", "read pointer written back to physical {physical:#010x} (guest {address:#010x}), block size 2^{}", call.argument(1));
     COMMAND_PROCESSOR
         .lock()
         .unwrap()

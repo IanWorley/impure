@@ -24,11 +24,15 @@ const SCRATCH_UMSK: u32 = 0x1DC;
 const SCRATCH_ADDR: u32 = 0x1DD;
 const SCRATCH_REG0: u32 = 0x578;
 const SCRATCH_REGISTER_COUNT: u32 = 8;
-pub const WRITE_POINTER_ADDRESS: u32 = GPU_REGISTERS + CP_RB_WPTR * WORD_SIZE;
+/// Packets name registers with 15-bit indices; corrupt packets may carry wider ones.
+const REGISTER_INDEX_MASK: u32 = 0x7FFF;
+pub const WRITE_POINTER_ADDRESS: u32 = register_address(CP_RB_WPTR);
 
 /// Registers whose reads return fixed values on the console (as Xenia reports them): EDRAM
 /// timing, the display's vertical counter (720 lines), interrupt status (always "vertical
-/// blank"), and the viewport size (1280x720). Stored once, since guest reads are memory reads.
+/// blank"), and the viewport size (1280x720). Guest reads are memory reads, so they are stored,
+/// and stored again at each vertical blank: packets can overwrite them, and the title's
+/// vertical blank handler only presents queued frames while the status says "vertical blank".
 const FIXED_REGISTERS: [(u32, u32); 4] = [
     (0x0F00, 0x0810_0748),
     (0x194C, 0x0000_02D0),
@@ -67,6 +71,7 @@ const OPCODE_WAIT_REG_MEM: u32 = 0x3C;
 const OPCODE_INDIRECT_BUFFER: u32 = 0x3F;
 const OPCODE_ME_INIT: u32 = 0x48;
 const OPCODE_EVENT_WRITE_SHD: u32 = 0x58;
+const OPCODE_EVENT_WRITE_EXT: u32 = 0x5A;
 const OPCODE_SET_BIN_MASK_LO: u32 = 0x60;
 const OPCODE_SET_BIN_MASK_HI: u32 = 0x61;
 const OPCODE_SET_BIN_SELECT_LO: u32 = 0x62;
@@ -95,6 +100,8 @@ const DIRECT_INDEX_MASK: u32 = 0xFFFF;
 /// LOAD_ALU_CONSTANT's source is a physical address; its size counts words in 12 bits.
 const LOAD_ADDRESS_MASK: u32 = 0x3FFF_FFFF;
 const LOAD_SIZE_MASK: u32 = 0xFFF;
+/// INDIRECT_BUFFER's size field: 20 bits of words, as Xenia reads it.
+const INDIRECT_BUFFER_SIZE_MASK: u32 = 0xF_FFFF;
 /// IM_LOAD and IM_LOAD_IMMEDIATE: the shader stage (vertex 0, pixel 1) in the low two bits
 /// (of the address, for IM_LOAD), and the size in words in the low 16 bits of the next word.
 const SHADER_STAGE_MASK: u32 = 0x3;
@@ -128,6 +135,12 @@ const ENDIAN_NONE: u32 = 0;
 const ENDIAN_8_IN_16: u32 = 1;
 const ENDIAN_8_IN_32: u32 = 2;
 const ENDIAN_16_IN_32: u32 = 3;
+/// EVENT_WRITE_EXT reports the screen extent a draw touched: minimum and maximum X and Y in
+/// 8-pixel units, then minimum and maximum Z, as 16-bit values. Like Xenia, the stand-in
+/// reports the largest extent (8192 pixels, the largest texture size), so titles never skip
+/// work as unseen.
+const LARGEST_EXTENT: u16 = 8192 >> 3;
+const SCREEN_EXTENT: [u16; 6] = [0, LARGEST_EXTENT, 0, LARGEST_EXTENT, 0, 1];
 /// EVENT_WRITE_SHD writes the GPU's event counter instead of its value when this bit is set.
 const EVENT_WRITE_COUNTER: u32 = 1 << 31;
 /// WAIT_REG_MEM and COND_WRITE: the comparison in the low three bits, whether they poll memory
@@ -137,8 +150,9 @@ const WAIT_ON_MEMORY: u32 = 1 << 4;
 const WRITE_TO_MEMORY: u32 = 1 << 8;
 /// A stall this long (about a second at the kernel's poll rate) is worth reporting.
 const STALL_REPORT_POLLS: u32 = 2000;
-/// How many recently executed packets a stall report lists.
+/// How many recently executed packets a stall report lists, and how many of each one's words.
 const RECENT_PACKETS: usize = 12;
+const RECENT_PACKET_WORDS: usize = 6;
 /// PM4_INTERRUPT's body is a mask of the CPUs to interrupt.
 const CPU_COUNT: u32 = 6;
 
@@ -161,8 +175,11 @@ pub struct CommandProcessor {
     /// What the current stall waits for, and how many polls in a row it has lasted.
     stall: String,
     stalled_polls: u32,
-    /// The guest address and header of the latest packets, oldest first, for stall reports.
-    recent_packets: std::collections::VecDeque<(u32, u32)>,
+    /// The guest address and first words of the latest packets, oldest first, for stall
+    /// reports.
+    recent_packets: std::collections::VecDeque<(u32, Vec<u32>)>,
+    /// Whether a packet has tried to write the write pointer, which is reported once.
+    write_pointer_write_reported: bool,
     /// Indirect buffers being executed, outermost first. Their calls came from packets the read
     /// pointer has already passed, so they finish before the ring continues.
     indirect_buffers: Vec<Buffer>,
@@ -218,6 +235,12 @@ fn set_low_half(value: &mut u64, low: u32) {
 
 fn set_high_half(value: &mut u64, high: u32) {
     *value = (*value & u64::from(u32::MAX)) | (u64::from(high) << HALF_SHIFT);
+}
+
+fn write_fixed_registers(memory: &GuestMemory) {
+    for (register, value) in FIXED_REGISTERS {
+        memory.write_u32(register_address(register), value);
+    }
 }
 
 /// Reads one packet's words, given how many words are available to it.
@@ -316,6 +339,7 @@ impl CommandProcessor {
             stall: String::new(),
             stalled_polls: 0,
             recent_packets: std::collections::VecDeque::with_capacity(RECENT_PACKETS),
+            write_pointer_write_reported: false,
         }
     }
 
@@ -329,9 +353,7 @@ impl CommandProcessor {
         if let Some(writeback) = self.read_pointer_writeback {
             memory.write_u32(writeback, 0);
         }
-        for (register, value) in FIXED_REGISTERS {
-            memory.write_u32(GPU_REGISTERS + register * WORD_SIZE, value);
-        }
+        write_fixed_registers(memory);
     }
 
     /// How many distinct shaders the title has loaded.
@@ -340,8 +362,9 @@ impl CommandProcessor {
     }
 
     /// Called at each vertical blank, so titles that read the counter see the GPU progress.
-    pub fn mark_vertical_blank(&mut self) {
+    pub fn mark_vertical_blank(&mut self, memory: &GuestMemory) {
         self.vertical_blanks = self.vertical_blanks.wrapping_add(1);
+        write_fixed_registers(memory);
     }
 
     pub fn enable_read_pointer_writeback(&mut self, memory: &GuestMemory, address: u32) {
@@ -362,13 +385,16 @@ impl CommandProcessor {
                 let remaining = buffer.size_words - buffer.position;
                 if remaining == 0 {
                     self.indirect_buffers.pop();
+                    if self.indirect_buffers.is_empty() {
+                        self.write_back_read_pointer(memory);
+                    }
                     continue;
                 }
                 let read = |offset: u32| {
                     memory.read_u32(buffer.address + (buffer.position + offset) * WORD_SIZE)
                 };
                 let words = read_packet(read, remaining);
-                self.remember(buffer.address + buffer.position * WORD_SIZE, words[0]);
+                self.remember(buffer.address + buffer.position * WORD_SIZE, &words);
                 let step = self.execute_packet(environment, &words);
                 if !matches!(step, Step::Stall) {
                     self.indirect_buffers.last_mut().unwrap().position += words.len() as u32;
@@ -386,12 +412,18 @@ impl CommandProcessor {
                     memory.read_u32(ring + ((start + offset) % ring_words) * WORD_SIZE)
                 };
                 let words = read_packet(read, available);
-                self.remember(ring + start * WORD_SIZE, words[0]);
+                self.remember(ring + start * WORD_SIZE, &words);
                 let step = self.execute_packet(environment, &words);
-                if !matches!(step, Step::Stall) {
-                    self.read_pointer = (start + words.len() as u32) % ring_words;
-                    if let Some(address) = self.read_pointer_writeback {
-                        memory.write_u32(address, self.read_pointer);
+                match step {
+                    Step::Stall => {}
+                    // The title reuses commands the read pointer has passed, so it passes an
+                    // indirect buffer only once the buffer has executed, as Xenia's does.
+                    Step::Call(_) => {
+                        self.read_pointer = (start + words.len() as u32) % ring_words;
+                    }
+                    Step::Continue => {
+                        self.read_pointer = (start + words.len() as u32) % ring_words;
+                        self.write_back_read_pointer(memory);
                     }
                 }
                 (words, step)
@@ -400,16 +432,11 @@ impl CommandProcessor {
                 Step::Stall => {
                     self.stalled_polls += 1;
                     if self.stalled_polls == STALL_REPORT_POLLS {
-                        let recent: Vec<String> = self
-                            .recent_packets
-                            .iter()
-                            .map(|(address, header)| format!("{address:#010x}: {header:#010x}"))
-                            .collect();
                         environment.report(format!(
-                            "stalled for {STALL_REPORT_POLLS} polls: {}; {} indirect buffers deep, latest packets {}",
+                            "stalled for {STALL_REPORT_POLLS} polls: {}; {}, latest packets {}",
                             self.stall,
-                            self.indirect_buffers.len(),
-                            recent.join(", ")
+                            self.position(),
+                            self.recent_packets()
                         ));
                     }
                     break;
@@ -423,11 +450,52 @@ impl CommandProcessor {
         progressed
     }
 
-    fn remember(&mut self, address: u32, header: u32) {
+    fn write_back_read_pointer(&self, memory: &GuestMemory) {
+        if let Some(address) = self.read_pointer_writeback {
+            memory.write_u32(address, self.read_pointer);
+        }
+    }
+
+    /// Where execution is, for reports: the ring read pointer and each indirect buffer's
+    /// address, size and position, outermost first.
+    fn position(&self) -> String {
+        let buffers: Vec<String> = self
+            .indirect_buffers
+            .iter()
+            .map(|buffer| {
+                format!(
+                    "buffer {:#010x} at word {:#x} of {:#x}",
+                    buffer.address, buffer.position, buffer.size_words
+                )
+            })
+            .collect();
+        format!(
+            "ring at word {:#x}, {}",
+            self.read_pointer,
+            buffers.join(", ")
+        )
+    }
+
+    fn recent_packets(&self) -> String {
+        let recent: Vec<String> = self
+            .recent_packets
+            .iter()
+            .map(|(address, words)| format!("{address:#010x}: {words:08x?}"))
+            .collect();
+        recent.join(", ")
+    }
+
+    /// Records a packet for stall reports; retries of a stalled packet are recorded once, so
+    /// the packets before it stay visible.
+    fn remember(&mut self, address: u32, words: &[u32]) {
+        if self.stalled_polls > 0 {
+            return;
+        }
         if self.recent_packets.len() == RECENT_PACKETS {
             self.recent_packets.pop_front();
         }
-        self.recent_packets.push_back((address, header));
+        let first = words[..words.len().min(RECENT_PACKET_WORDS)].to_vec();
+        self.recent_packets.push_back((address, first));
     }
 
     fn execute_packet(&mut self, environment: &impl Environment, words: &[u32]) -> Step {
@@ -472,7 +540,8 @@ impl CommandProcessor {
 
     fn execute_type3(&mut self, environment: &impl Environment, opcode: u32, body: &[u32]) -> Step {
         match (opcode, body) {
-            (OPCODE_INDIRECT_BUFFER | OPCODE_INDIRECT_BUFFER_PFD, &[physical, size_words, ..]) => {
+            (OPCODE_INDIRECT_BUFFER | OPCODE_INDIRECT_BUFFER_PFD, &[physical, size, ..]) => {
+                let size_words = size & INDIRECT_BUFFER_SIZE_MASK;
                 let Some(address) = environment.guest_address(physical) else {
                     environment.report(format!(
                         "indirect buffer at unallocated physical {physical:#010x}"
@@ -490,7 +559,7 @@ impl CommandProcessor {
             }
             (OPCODE_REG_RMW, &[register, and_mask, or_mask, ..]) => {
                 let memory = environment.memory();
-                let current = memory.read_u32(GPU_REGISTERS + register * WORD_SIZE);
+                let current = memory.read_u32(register_address(register));
                 self.write_register(environment, register, (current & and_mask) | or_mask);
             }
             (OPCODE_EVENT_WRITE_SHD, &[initiator, address, value, ..]) => {
@@ -501,6 +570,21 @@ impl CommandProcessor {
                 };
                 environment.trace(format!("event write {data:#x} to {address:#x}"));
                 write_gpu_memory(environment, address, data);
+            }
+            (OPCODE_EVENT_WRITE_EXT, &[_, address, ..]) => {
+                // Titles ask for 8-in-16 byte order, which stores big-endian halves.
+                let physical = address & !ENDIAN_MASK;
+                match environment.guest_address(physical) {
+                    Some(guest) => {
+                        for (index, &value) in (0..).zip(&SCREEN_EXTENT) {
+                            let offset = index * size_of::<u16>() as u32;
+                            environment.memory().write_u16(guest + offset, value);
+                        }
+                    }
+                    None => environment.report(format!(
+                        "screen extent write to unallocated physical {physical:#010x}"
+                    )),
+                }
             }
             (OPCODE_WAIT_REG_MEM, &[info, poll_address, reference, mask, ..]) => {
                 if !self.condition_holds(environment, info, poll_address, reference, mask) {
@@ -672,22 +756,36 @@ impl CommandProcessor {
         } else {
             environment
                 .memory()
-                .read_u32(GPU_REGISTERS + poll_address * WORD_SIZE)
+                .read_u32(register_address(poll_address))
         }
     }
 
     fn write_register(&mut self, environment: &impl Environment, register: u32, value: u32) {
         environment.trace(format!("register {register:#06x} = {value:#010x}"));
+        // The write pointer is the CPU's: like Xenia, which keeps it outside the register file,
+        // packets cannot move it.
+        if register == CP_RB_WPTR {
+            if !self.write_pointer_write_reported {
+                self.write_pointer_write_reported = true;
+                environment.report(format!(
+                    "a packet wrote {value:#x} to CP_RB_WPTR, ignored; {}, latest packets {}",
+                    self.position(),
+                    self.recent_packets()
+                ));
+            }
+            return;
+        }
         let memory = environment.memory();
-        memory.write_u32(GPU_REGISTERS + register * WORD_SIZE, value);
+        memory.write_u32(register_address(register), value);
         // Scratch registers whose mask bit is set are also written to memory, which titles use
         // to learn how far the GPU has got.
         let scratch = register.wrapping_sub(SCRATCH_REG0);
         if scratch < SCRATCH_REGISTER_COUNT
-            && memory.read_u32(GPU_REGISTERS + SCRATCH_UMSK * WORD_SIZE) & (1 << scratch) != 0
+            && memory.read_u32(register_address(SCRATCH_UMSK)) & (1 << scratch) != 0
         {
-            let physical =
-                memory.read_u32(GPU_REGISTERS + SCRATCH_ADDR * WORD_SIZE) + scratch * WORD_SIZE;
+            let physical = memory
+                .read_u32(register_address(SCRATCH_ADDR))
+                .wrapping_add(scratch * WORD_SIZE);
             match environment.guest_address(physical) {
                 Some(address) => memory.write_u32(address, value),
                 None => environment.report(format!(
@@ -714,8 +812,13 @@ pub fn swap_packet(front_buffer: u32, width: u32, height: u32) -> [u32; 5] {
 }
 
 /// The current value of a GPU register.
+/// The guest address a register's value is kept at.
+const fn register_address(register: u32) -> u32 {
+    GPU_REGISTERS + (register & REGISTER_INDEX_MASK) * WORD_SIZE
+}
+
 pub fn read_register(memory: &GuestMemory, register: u32) -> u32 {
-    memory.read_u32(GPU_REGISTERS + register * WORD_SIZE)
+    memory.read_u32(register_address(register))
 }
 
 #[cfg(test)]
@@ -845,9 +948,7 @@ mod tests {
         submit(&environment, &mut processor, &filler);
         submit(&environment, &mut processor, &[type0(REGISTER, 1), VALUE]);
         assert_eq!(
-            environment
-                .memory
-                .read_u32(GPU_REGISTERS + REGISTER * WORD_SIZE),
+            environment.memory.read_u32(register_address(REGISTER)),
             VALUE
         );
     }
@@ -878,9 +979,7 @@ mod tests {
         words.extend([type0(REGISTER, 1), VALUE]);
         submit(&environment, &mut processor, &words);
         assert_eq!(
-            environment
-                .memory
-                .read_u32(GPU_REGISTERS + REGISTER * WORD_SIZE),
+            environment.memory.read_u32(register_address(REGISTER)),
             VALUE
         );
     }
@@ -922,13 +1021,78 @@ mod tests {
             indirect.len() as u32,
         ];
         submit(&environment, &mut processor, &call);
-        let register = GPU_REGISTERS + REGISTER * WORD_SIZE;
+        let register = register_address(REGISTER);
         assert_eq!(memory.read_u32(register), 0);
         assert!(!processor.poll(&environment));
 
         memory.write_u32(VIEW + FLAG_PHYSICAL, 0);
         assert!(processor.poll(&environment));
         assert_eq!(memory.read_u32(register), VALUE);
+    }
+
+    #[test]
+    fn registers_beyond_the_register_space_wrap_into_it() {
+        // 1.0f, the kind of word a corrupt packet carries.
+        const OVERSIZED: u32 = 0x3F80_0000;
+        const REGISTER: u32 = 0x100;
+        const VALUE: u32 = 0x1234;
+        let (environment, mut processor) = setup();
+        let memory = &environment.memory;
+        memory.write_u32(register_address(OVERSIZED & REGISTER_INDEX_MASK), 1);
+        let wait = [
+            type3(OPCODE_WAIT_REG_MEM, 5),
+            WAIT_EQUAL,
+            OVERSIZED,
+            1,
+            u32::MAX,
+            0,
+            type0(REGISTER, 1),
+            VALUE,
+        ];
+        submit(&environment, &mut processor, &wait);
+        assert_eq!(memory.read_u32(register_address(REGISTER)), VALUE);
+    }
+
+    #[test]
+    fn the_read_pointer_passes_an_indirect_buffer_once_it_has_executed() {
+        const FLAG_PHYSICAL: u32 = 0x5000;
+        let (environment, mut processor) = setup();
+        let memory = &environment.memory;
+        memory.write_u32(VIEW + FLAG_PHYSICAL, 1);
+        let indirect = [
+            type3(OPCODE_WAIT_REG_MEM, 5),
+            WAIT_ON_MEMORY | WAIT_EQUAL,
+            FLAG_PHYSICAL | ENDIAN_8_IN_32,
+            0,
+            u32::MAX,
+            0,
+        ];
+        for (offset, &word) in (0..).zip(&indirect) {
+            memory.write_u32(VIEW + INDIRECT_PHYSICAL + offset * WORD_SIZE, word);
+        }
+        let call = [
+            type3(OPCODE_INDIRECT_BUFFER, 2),
+            INDIRECT_PHYSICAL,
+            indirect.len() as u32,
+        ];
+        submit(&environment, &mut processor, &call);
+        assert_eq!(memory.read_u32(WRITEBACK), 0);
+
+        memory.write_u32(VIEW + FLAG_PHYSICAL, 0);
+        processor.poll(&environment);
+        assert_eq!(memory.read_u32(WRITEBACK), call.len() as u32);
+    }
+
+    #[test]
+    fn packets_cannot_move_the_write_pointer() {
+        const STRAY_VALUE: u32 = 0;
+        let (environment, mut processor) = setup();
+        let packet = [type0(CP_RB_WPTR, 1), STRAY_VALUE];
+        submit(&environment, &mut processor, &packet);
+        assert_eq!(
+            environment.memory.read_u32(WRITE_POINTER_ADDRESS),
+            packet.len() as u32
+        );
     }
 
     #[test]
@@ -1008,7 +1172,7 @@ mod tests {
             assert_eq!(
                 environment
                     .memory
-                    .read_u32(GPU_REGISTERS + (first + offset) * WORD_SIZE),
+                    .read_u32(register_address(first + offset)),
                 value
             );
         }

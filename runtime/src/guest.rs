@@ -37,6 +37,9 @@ const PCR_CURRENT_THREAD: u32 = 0x100;
 const PCR_CURRENT_CPU: u32 = 0x10C;
 const TLS_SIZE: u32 = GUEST_PAGE_SIZE;
 const THREAD_OBJECT_SIZE: u32 = GUEST_PAGE_SIZE;
+/// KTHREAD's thread ID (Xenia's X_KTHREAD layout). Titles read it inline: Direct3D compares
+/// it with the device owner's to decide whether a thread may write commands itself.
+const THREAD_OBJECT_THREAD_ID: u32 = 0x14C;
 
 /// Every guest call is a host call, so deep guest recursion needs a deep host stack.
 const HOST_STACK_SIZE: usize = 64 << 20;
@@ -186,6 +189,8 @@ pub fn prepare_thread(stack_size: u32) -> Result<ThreadEnvironment, String> {
     memory.write_u32(pcr + PCR_STACK_BASE, stack_base);
     memory.write_u32(pcr + PCR_STACK_LIMIT, stack_limit);
     memory.write_u32(pcr + PCR_CURRENT_THREAD, thread_object);
+    // The thread object's address doubles as the thread ID, as ExCreateThread reports it.
+    memory.write_u32(thread_object + THREAD_OBJECT_THREAD_ID, thread_object);
     Ok(ThreadEnvironment {
         stack_top: stack_base - STACK_TOP_RESERVE,
         pcr,

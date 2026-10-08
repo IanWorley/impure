@@ -54,9 +54,16 @@ std::string ImportName(std::string_view library, const std::unordered_map<size_t
 
 extern "C" {
 
-// Implemented in Rust (src/kernel.rs): returns the guest address the slot should point to.
+// Where the lookup table lies, for the crash reporter (src/crash.rs). Generated indirect calls
+// index the table without a bounds check, so a call to an address outside the code range faults
+// past it, and the faulting address says which address was called.
+extern const uint64_t pure_lookup_table_offset = PPC_IMAGE_BASE + PPC_IMAGE_SIZE;
+extern const uint32_t pure_code_base = PPC_CODE_BASE;
+extern const uint32_t pure_code_size = PPC_CODE_SIZE;
+
+// Implemented in Rust (src/kernel/mod.rs): returns the guest address the slot should point to.
 uint32_t pure_resolve_variable_import(const char* name);
-// Implemented in Rust (src/kernel.rs): reports the call and stops the guest thread.
+// Implemented in Rust (src/kernel/mod.rs): reports the call and stops the guest thread.
 [[noreturn]] void pure_unmapped_call_halt(uint32_t target, uint32_t return_address);
 
 // Every lookup-table slot without a recompiled function points here, so an indirect call to such

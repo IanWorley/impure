@@ -27,6 +27,17 @@ const OFFSET_Y_SHIFT: u32 = 16;
 const SCISSOR_MASK: u32 = 0x3FFF;
 const SCISSOR_Y_SHIFT: u32 = 16;
 const SCISSOR_WINDOW_OFFSET_DISABLE: u32 = 1 << 31;
+/// RB_DEPTH_INFO: the depth surface holds 20e4 floats (D24FS8) rather than 24-bit unorm.
+const DEPTH_FORMAT_FLOAT: u32 = 1 << 16;
+/// RB_DEPTH_CLEAR: 24-bit depth above 8-bit stencil.
+const DEPTH_CLEAR_SHIFT: u32 = 8;
+const UNORM_24_MAXIMUM: f32 = 0xFF_FFFF as f32;
+/// The 20e4 format: a 4-bit exponent biased by 15 above a 20-bit mantissa, no sign.
+const FLOAT_20E4_MANTISSA_BITS: u32 = 20;
+const FLOAT_20E4_MANTISSA_MASK: u32 = (1 << FLOAT_20E4_MANTISSA_BITS) - 1;
+/// Rebiases a 20e4 exponent to f32's (127 - 15), and widens the mantissa to f32's 23 bits.
+const FLOAT_20E4_EXPONENT_REBIAS: u32 = 112;
+const F32_MANTISSA_BITS: u32 = 23;
 
 /// A render target surface from RB_SURFACE_INFO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +54,20 @@ impl Surface {
         Self {
             pitch: surface_info & SURFACE_PITCH_MASK,
             sample_shift: (u32::from(msaa >= MSAA_4X), u32::from(msaa >= MSAA_2X)),
+        }
+    }
+
+    /// The surface with 2x multisampling rendered at one sample per pixel, which halves the
+    /// work of drawing to it. 4x surfaces keep their samples: 1x surfaces alias them at twice
+    /// their pitch, which only holds in sample space.
+    pub fn without_vertical_samples(self) -> Self {
+        if self.sample_shift.0 == 0 {
+            Self {
+                sample_shift: (0, 0),
+                ..self
+            }
+        } else {
+            self
         }
     }
 
@@ -114,6 +139,31 @@ pub fn scissor(top_left: u32, bottom_right: u32, window_offset: (i32, i32)) -> R
     }
 }
 
+/// The depth a resolve clears the depth surface to, in the format RB_DEPTH_INFO gives it.
+pub fn depth_clear_value(clear: u32, depth_info: u32) -> f32 {
+    let depth = clear >> DEPTH_CLEAR_SHIFT;
+    if depth_info & DEPTH_FORMAT_FLOAT == 0 {
+        return depth as f32 / UNORM_24_MAXIMUM;
+    }
+    // As Xenia's Float20e4To32: a zero exponent holds a denormal, normalized here.
+    let (mut exponent, mut mantissa) = (
+        depth >> FLOAT_20E4_MANTISSA_BITS,
+        depth & FLOAT_20E4_MANTISSA_MASK,
+    );
+    if exponent == 0 {
+        if mantissa == 0 {
+            return 0.0;
+        }
+        let shift = mantissa.leading_zeros() - (u32::BITS - FLOAT_20E4_MANTISSA_BITS - 1);
+        exponent = 1u32.wrapping_sub(shift);
+        mantissa = (mantissa << shift) & FLOAT_20E4_MANTISSA_MASK;
+    }
+    f32::from_bits(
+        (exponent.wrapping_add(FLOAT_20E4_EXPONENT_REBIAS) << F32_MANTISSA_BITS)
+            | (mantissa << (F32_MANTISSA_BITS - FLOAT_20E4_MANTISSA_BITS)),
+    )
+}
+
 /// The pixels a resolve copies: the bounds of its three vertices (Direct3D puts them in vertex
 /// fetch constant 0), rounded by the top-left rule, moved by the window offset, clamped to the
 /// scissor and the surface pitch, and widened to whole 8x8 blocks.
@@ -124,6 +174,9 @@ pub fn resolve_rectangle(
     scissor: Rectangle,
     pitch: u32,
 ) -> Option<Rectangle> {
+    if scissor.is_empty() {
+        return None;
+    }
     // Xenia's 16.8 fixed point: a centre at .5 is covered at the top-left, not the bottom-right.
     const FIXED_ONE: f32 = 256.0;
     const ROUNDING: i32 = 127;
@@ -183,6 +236,53 @@ mod tests {
                 right: 1280,
                 bottom: 720
             })
+        );
+    }
+
+    #[test]
+    fn only_2x_surfaces_drop_their_vertical_samples() {
+        const PITCH_1280_2X: u32 = 0x0001_0500;
+        const PITCH_640_4X: u32 = 0x0002_0280;
+        assert_eq!(
+            Surface::decode(PITCH_1280_2X)
+                .without_vertical_samples()
+                .sample_shift,
+            (0, 0)
+        );
+        assert_eq!(
+            Surface::decode(PITCH_640_4X)
+                .without_vertical_samples()
+                .sample_shift,
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn depth_clears_follow_the_depth_surface_format() {
+        const FLOAT_DEPTH: u32 = 1 << 16;
+        const UNORM_ONE: u32 = 0xFF_FFFF << 8;
+        // 1.0 and 0.5 as 20e4 floats: exponents 15 and 14 (bias 15), zero mantissas.
+        const FLOAT_ONE: u32 = 0xF0_0000 << 8;
+        const FLOAT_HALF: u32 = 0xE0_0000 << 8;
+        assert_eq!(depth_clear_value(UNORM_ONE, 0), 1.0);
+        assert_eq!(depth_clear_value(FLOAT_ONE, FLOAT_DEPTH), 1.0);
+        assert_eq!(depth_clear_value(FLOAT_HALF, FLOAT_DEPTH), 0.5);
+        assert_eq!(depth_clear_value(0, FLOAT_DEPTH), 0.0);
+        // The smallest denormal: a mantissa of 1 under a zero exponent.
+        const FLOAT_SMALLEST: u32 = 1 << 8;
+        assert_eq!(
+            depth_clear_value(FLOAT_SMALLEST, FLOAT_DEPTH),
+            2f32.powi(-34)
+        );
+    }
+
+    #[test]
+    fn an_inverted_scissor_resolves_nothing() {
+        let vertices = [-0.5, -0.5, 1279.5, -0.5, 1279.5, 719.5];
+        let inverted = scissor(1280 | (720 << 16), 0, (0, 0));
+        assert_eq!(
+            resolve_rectangle(vertices, true, (0, 0), inverted, 1280),
+            None
         );
     }
 

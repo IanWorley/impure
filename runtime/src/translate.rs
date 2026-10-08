@@ -54,7 +54,8 @@ const FETCH_ONE: u32 = 5;
 
 /// The bindings every translated shader declares, and the layout the renderer fills (see
 /// `renderer::Constants`): float constants (vertex 0-255, pixel 256-511), the fetch constants
-/// (six words per slot), the bool and loop constants, then per-draw values. Textures are in
+/// (six words per slot; the renderer replaces vertex fetch addresses with byte offsets in
+/// `memory`), the bool and loop constants, then per-draw values. Textures are in
 /// group 1: texture constant `n` at binding `2n`, its sampler at `2n + 1`.
 pub const CONSTANTS_LAYOUT: &str = "\
 struct Constants {
@@ -62,8 +63,6 @@ struct Constants {
     fetch: array<u32, 192>,
     bools: array<u32, 8>,
     loops: array<u32, 32>,
-    // Where `memory` starts, as a physical dword address.
-    memory_base: u32,
     // The index buffer: its byte offset in `memory`, its index size in bits (0 without one), its
     // byte order, and the bias added to every index.
     index_offset: u32,
@@ -202,6 +201,8 @@ pub enum VertexEntry {
     TriangleFan,
     /// Six host vertices per three guest vertices, completing each rectangle's fourth corner.
     RectangleList,
+    /// One host vertex per guest index, with the host's index buffer holding the guest's.
+    Indexed,
 }
 
 impl VertexEntry {
@@ -211,6 +212,7 @@ impl VertexEntry {
             Self::QuadList => "main_quad_list",
             Self::TriangleFan => "main_triangle_fan",
             Self::RectangleList => "main_rectangle_list",
+            Self::Indexed => "main_indexed",
         }
     }
 }
@@ -973,13 +975,13 @@ impl Translator {
             self.unsupported.insert(format!("vertex format {format}"));
             return;
         };
-        // Vertex fetch constants are two words each: the dword address (above the type bits),
-        // then the byte order (low two bits) and size.
+        // Vertex fetch constants are two words each: the address (above the type bits), then
+        // the byte order (low two bits) and size. The address is a byte offset in `memory`.
         let constant_word = fetch.constant() * 2;
         if !fetch.is_mini_fetch() {
             emit!(
                 self,
-                "vfetch_address = i32(constants.fetch[{constant_word}] >> 2u) - i32(constants.memory_base);"
+                "vfetch_address = i32(constants.fetch[{constant_word}] >> 2u);"
             );
             if fetch.stride() != 0 {
                 let rounding = if fetch.is_index_rounded() {
@@ -1128,6 +1130,11 @@ const VERTEX_ENTRY_POINTS: &str = "\
 @vertex
 fn main(@builtin(vertex_index) index: u32) -> VertexOutput {
     return guest_vertex(guest_index(index));
+}
+
+@vertex
+fn main_indexed(@builtin(vertex_index) index: u32) -> VertexOutput {
+    return guest_vertex(index + constants.index_bias);
 }
 
 @vertex

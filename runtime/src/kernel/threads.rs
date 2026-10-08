@@ -3,6 +3,7 @@
 //! waits on thread handles go through the same dispatcher as every other wait.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -19,7 +20,8 @@ static SUSPEND_COUNTS: Mutex<BTreeMap<u32, u32>> = Mutex::new(BTreeMap::new());
 static RESUMED: Condvar = Condvar::new();
 
 /// What the title set about how each thread is scheduled. Host threads are scheduled by the
-/// host, so these are only recorded for the title to read back.
+/// host, so these are only recorded for the title to read back, apart from the affinity's
+/// hardware thread, which the thread's PCR reports to code that keeps per-processor state.
 #[derive(Clone, Copy)]
 struct Scheduling {
     base_priority: i32,
@@ -27,16 +29,25 @@ struct Scheduling {
     boost_disabled: bool,
 }
 
+/// The console's six hardware threads, one bit each.
+const ALL_PROCESSORS: u32 = 0x3F;
+const PROCESSOR_COUNT: u32 = 6;
+/// How many threads have been created without an affinity.
+static ROUND_ROBIN_THREADS: AtomicU32 = AtomicU32::new(0);
 const DEFAULT_SCHEDULING: Scheduling = Scheduling {
     base_priority: 0,
-    // All six hardware threads.
-    affinity: 0x3F,
+    affinity: ALL_PROCESSORS,
     boost_disabled: false,
 };
 static SCHEDULING: Mutex<BTreeMap<u32, Scheduling>> = Mutex::new(BTreeMap::new());
+/// Title threads' environments by thread object, so an affinity change can update the PCR.
+static ENVIRONMENTS: Mutex<BTreeMap<u32, ThreadEnvironment>> = Mutex::new(BTreeMap::new());
 
 /// ExCreateThread's creation flag for a thread that waits to be resumed.
 const CREATE_SUSPENDED: u32 = 0x1;
+/// ExCreateThread's creation flags carry the thread's affinity in their top byte; zero leaves
+/// the default.
+const CREATION_AFFINITY_SHIFT: u32 = 24;
 /// Used when the XEX header has no default stack size; the console's own default.
 const FALLBACK_STACK_SIZE: u32 = 0x4_0000;
 const MINIMUM_STACK_SIZE: u32 = 0x4000;
@@ -49,6 +60,8 @@ pub fn start_main_thread(entry: u32) -> Result<ThreadEnvironment, String> {
     let environment = guest::prepare_thread(default_stack_size())?;
     DISPATCHER.initialize_thread(guest::memory(), environment.thread_object);
     let thread = environment.thread_object;
+    ENVIRONMENTS.lock().unwrap().insert(thread, environment);
+    guest::set_current_cpu(environment, next_round_robin_processor());
     guest::spawn(MAIN_THREAD_NAME.to_string(), move || {
         guest::call(environment, entry, [0, 0]);
         exit(thread);
@@ -79,6 +92,13 @@ pub(super) fn ex_create_thread(call: &ImportCall) -> u32 {
     };
     let thread = environment.thread_object;
     DISPATCHER.initialize_thread(call.memory, thread);
+    ENVIRONMENTS.lock().unwrap().insert(thread, environment);
+    let affinity = (flags >> CREATION_AFFINITY_SHIFT) & ALL_PROCESSORS;
+    if affinity != 0 {
+        set_affinity(thread, affinity);
+    } else {
+        guest::set_current_cpu(environment, next_round_robin_processor());
+    }
     let suspended = flags & CREATE_SUSPENDED != 0;
     if suspended {
         SUSPEND_COUNTS.lock().unwrap().insert(thread, 1);
@@ -201,14 +221,34 @@ pub(super) fn ke_query_base_priority_thread(call: &ImportCall) -> u32 {
 /// the console returns a status and reports the previous affinity through the pointer.
 pub(super) fn ke_set_affinity_thread(call: &ImportCall) -> u32 {
     let (thread, affinity, previous_out) = (call.argument(0), call.argument(1), call.argument(2));
+    let affinity = affinity & ALL_PROCESSORS;
     if affinity == 0 {
         return NtStatus::INVALID_PARAMETER.0;
     }
-    let previous = update_scheduling(thread, |settings| settings.affinity = affinity).affinity;
+    let previous = set_affinity(thread, affinity);
     if previous_out != 0 {
         call.memory.write_u32(previous_out, previous);
     }
     NtStatus::SUCCESS.0
+}
+
+/// Spreads threads created without an affinity over the hardware threads in turn, as Xenia
+/// does. Per-processor state in the title and its libraries assumes one thread at a time runs
+/// on each hardware thread; host threads all reporting the same one would share it at once.
+fn next_round_robin_processor() -> u8 {
+    // Xenia hands out 1, 2, ..., 5, 0, 1, ...
+    let count = ROUND_ROBIN_THREADS.fetch_add(1, Ordering::Relaxed);
+    ((count + 1) % PROCESSOR_COUNT) as u8
+}
+
+/// Records `affinity` (nonzero, within ALL_PROCESSORS) and, like Xenia, reports the highest
+/// hardware thread it allows as the thread's current processor. Returns the previous affinity.
+fn set_affinity(thread: u32, affinity: u32) -> u32 {
+    if let Some(&environment) = ENVIRONMENTS.lock().unwrap().get(&thread) {
+        let highest = u32::BITS - 1 - affinity.leading_zeros();
+        guest::set_current_cpu(environment, highest as u8);
+    }
+    update_scheduling(thread, |settings| settings.affinity = affinity).affinity
 }
 
 /// KeSetDisableBoostThread(thread, disable) -> whether boosting was disabled before.

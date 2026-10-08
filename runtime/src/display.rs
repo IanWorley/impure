@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::render::renderer::{RenderDevice, RenderQueue};
+use bevy::render::renderer::{RenderAdapterInfo, RenderDevice, RenderQueue};
 use bevy::render::texture::GpuImage;
 use bevy::render::{Render, RenderApp, RenderSystems};
 
@@ -57,6 +57,9 @@ fn spawn_display(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let handle = images.add(image);
     commands.spawn((
         Camera2d,
+        // The sprite only shows the front buffer, so multisampling (Bevy's default) would just
+        // cost a multisampled pass and a resolve per window frame.
+        Msaa::Off,
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::AutoMin {
                 min_width: FRONT_BUFFER_WIDTH as f32,
@@ -73,13 +76,15 @@ fn spawn_display(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 fn start_renderer(
     device: Option<Res<RenderDevice>>,
     queue: Option<Res<RenderQueue>>,
+    adapter: Option<Res<RenderAdapterInfo>>,
     mut started: Local<bool>,
 ) {
     if *started {
         return;
     }
-    if let (Some(device), Some(queue)) = (device, queue) {
-        renderer::install(device.wgpu_device().clone(), (****queue).clone());
+    if let (Some(device), Some(queue), Some(adapter)) = (device, queue, adapter) {
+        let software = adapter.device_type == wgpu::DeviceType::Cpu;
+        renderer::install(device.wgpu_device().clone(), (****queue).clone(), software);
         *started = true;
     }
 }

@@ -65,14 +65,21 @@ mod xma;
 
 use std::env;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use bevy::prelude::*;
+use bevy::winit::{UpdateMode, WinitSettings};
 
 const WINDOW_TITLE: &str = "Pure (static recompilation)";
 const BACKGROUND_COLOR: Color = Color::srgb(0.05, 0.05, 0.08);
 const USAGE: &str = "usage: pure-runtime <path/to/default.xex> [--exit-on-stop]";
 const EXIT_ON_STOP_FLAG: &str = "--exit-on-stop";
 const USAGE_EXIT_CODE: u8 = 2;
+/// The window redraws at the console's 60 Hz. Without vertical sync (under Xvfb, for one) Bevy
+/// would otherwise redraw as fast as it can, taking the cores the guest threads need.
+const WINDOW_REFRESH_HZ: u32 = 60;
+const WINDOW_UPDATE_INTERVAL: Duration =
+    Duration::from_nanos(1_000_000_000 / WINDOW_REFRESH_HZ as u64);
 
 #[derive(Resource)]
 struct Options {
@@ -115,6 +122,10 @@ fn main() -> AppExit {
         }),
         ..default()
     }))
+    .insert_resource(WinitSettings {
+        focused_mode: UpdateMode::reactive(WINDOW_UPDATE_INTERVAL),
+        unfocused_mode: UpdateMode::reactive(WINDOW_UPDATE_INTERVAL),
+    })
     .insert_resource(ClearColor(BACKGROUND_COLOR))
     .insert_resource(options)
     .add_systems(Startup, start_guest)

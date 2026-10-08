@@ -1,5 +1,6 @@
 //! Guest textures as host texel data: undoing the console's tiled layout and byte order, and
-//! decoding formats hosts may not sample directly (DXT, 16-bit packed) to 8-bit RGBA.
+//! decoding formats hosts may not sample directly (DXT, 16-bit packed) to 8-bit RGBA. Float
+//! formats pass through: after the byte-order swap their texels are already in host layout.
 //!
 //! Only the base level of 2D textures is read. Layouts follow Xenia's `texture_address.h`.
 
@@ -15,6 +16,8 @@ const FORMAT_4_4_4_4: u32 = 15;
 const FORMAT_DXT1: u32 = 18;
 const FORMAT_DXT2_3: u32 = 19;
 const FORMAT_DXT4_5: u32 = 20;
+const FORMAT_16_16_16_16_FLOAT: u32 = 32;
+const FORMAT_32_FLOAT: u32 = 36;
 
 /// Tiled textures are stored in 32x32-block macro tiles, so their pitch is padded to 32 blocks.
 const MACRO_TILE_BLOCKS: u32 = 32;
@@ -26,6 +29,8 @@ pub enum HostFormat {
     R8,
     Rg8,
     Rgba8,
+    R32Float,
+    Rgba16Float,
 }
 
 /// A decoded base level, rows packed tightly.
@@ -53,7 +58,8 @@ fn layout(format: u32) -> Option<Layout> {
     Some(match format {
         FORMAT_8 => texels(1),
         FORMAT_1_5_5_5 | FORMAT_5_6_5 | FORMAT_8_8 | FORMAT_4_4_4_4 => texels(2),
-        FORMAT_8_8_8_8 => texels(4),
+        FORMAT_8_8_8_8 | FORMAT_32_FLOAT => texels(4),
+        FORMAT_16_16_16_16_FLOAT => texels(8),
         FORMAT_DXT1 => dxt(8),
         FORMAT_DXT2_3 | FORMAT_DXT4_5 => dxt(16),
         _ => return None,
@@ -124,6 +130,14 @@ pub fn decode(descriptor: &TextureDescriptor, guest: &[u8]) -> Option<Decoded> {
             format: HostFormat::Rgba8,
             data: blocks,
         },
+        FORMAT_32_FLOAT => Decoded {
+            format: HostFormat::R32Float,
+            data: blocks,
+        },
+        FORMAT_16_16_16_16_FLOAT => Decoded {
+            format: HostFormat::Rgba16Float,
+            data: blocks,
+        },
         FORMAT_5_6_5 | FORMAT_1_5_5_5 | FORMAT_4_4_4_4 => Decoded {
             format: HostFormat::Rgba8,
             data: blocks
@@ -142,6 +156,27 @@ pub fn decode(descriptor: &TextureDescriptor, guest: &[u8]) -> Option<Decoded> {
 }
 
 /// Applies the GPU's byte order (xenos::Endian) to every 32-bit word.
+/// A fetch constant's swizzle (three bits per component: a component, or 4 for zero and 5 for
+/// one) for a host texture with `channels` channels. The console's formats with fewer than four
+/// components repeat their last one (RRRR, RGGG), where host textures give zero and one, so
+/// selections of the missing components go to the last one present.
+pub fn host_swizzle(swizzle: u32, channels: u8) -> u32 {
+    const SELECTOR_BITS: u32 = 3;
+    const SELECTOR_MASK: u32 = 0x7;
+    const COMPONENTS: u32 = 4;
+    let last = u32::from(channels.max(1)) - 1;
+    (0..COMPONENTS).fold(0, |host, component| {
+        let shift = component * SELECTOR_BITS;
+        let selector = (swizzle >> shift) & SELECTOR_MASK;
+        let selector = if selector < COMPONENTS {
+            selector.min(last)
+        } else {
+            selector
+        };
+        host | (selector << shift)
+    })
+}
+
 pub fn swap_words(data: &mut [u8], endian: u32) {
     const EIGHT_IN_16: u32 = 1;
     const EIGHT_IN_32: u32 = 2;
@@ -288,6 +323,30 @@ fn alpha_palette(first: u8, second: u8) -> [u8; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_with_fewer_components_repeat_their_last() {
+        // X, Y, Z, W, then 0 and 1, three bits each.
+        let selectors = |s: [u32; 4]| s.iter().rev().fold(0, |swizzle, &c| swizzle << 3 | c);
+        const ZERO: u32 = 4;
+        const ONE: u32 = 5;
+        assert_eq!(
+            host_swizzle(selectors([0, 1, 2, 3]), 1),
+            selectors([0, 0, 0, 0])
+        );
+        assert_eq!(
+            host_swizzle(selectors([0, 1, 2, 3]), 2),
+            selectors([0, 1, 1, 1])
+        );
+        assert_eq!(
+            host_swizzle(selectors([3, 2, ZERO, ONE]), 4),
+            selectors([3, 2, ZERO, ONE])
+        );
+        assert_eq!(
+            host_swizzle(selectors([3, 2, ZERO, ONE]), 1),
+            selectors([0, 0, ZERO, ONE])
+        );
+    }
 
     fn descriptor(format: u32, width: u32, height: u32, tiled: bool) -> TextureDescriptor {
         TextureDescriptor {
