@@ -11,9 +11,12 @@ readonly MAX_TRACKED_FILE_BYTES=$((2 * 1024 * 1024))
 readonly FORBIDDEN_PATTERN='\.(iso|7z|xex|xexp|bik|xma|xwb|xsb|xgs|bin|o|obj|a|lib)$|(^|/)ppc_recomp\.[0-9]+\.cpp$|(^|/)ppc_func_mapping\.cpp$|(^|/)(originals|local)/'
 # Every recompiled function is emitted as PPC_FUNC_IMPL(__imp__sub_<8 hex digits>). Committed
 # glue and build code name the PPC_FUNC macro and the bare `__imp__sub_` prefix, never these.
-readonly GENERATED_CODE_PATTERN='PPC_FUNC_IMPL\(|__imp__sub_[0-9A-F]{8}'
+readonly GENERATED_BODY_PATTERN='PPC_FUNC_IMPL\('
+readonly GENERATED_NAME_PATTERN='__imp__sub_[0-9A-F]{8}'
 # This script spells out the patterns above, so it is the one file the content search skips.
 readonly SELF_PATHSPEC=':(exclude)tools/check-no-game-content.sh'
+# The hand-written title fixes name the recompiled functions they wrap (but define none).
+readonly PATCHES_PATHSPEC=':(exclude)runtime/cpp/patches.cpp'
 # Every Xbox 360 executable starts with this magic, whatever its file name.
 readonly XEX_MAGIC='XEX2'
 
@@ -30,7 +33,10 @@ if [[ -n "${forbidden}" ]]; then
     status=1
 fi
 
-generated="$(git grep --cached -lE "${GENERATED_CODE_PATTERN}" -- . "${SELF_PATHSPEC}" || true)"
+generated="$(
+    git grep --cached -lE "${GENERATED_BODY_PATTERN}" -- . "${SELF_PATHSPEC}" || true
+    git grep --cached -lE "${GENERATED_NAME_PATTERN}" -- . "${SELF_PATHSPEC}" "${PATCHES_PATHSPEC}" || true
+)"
 if [[ -n "${generated}" ]]; then
     echo "error: tracked files contain XenonRecomp output:" >&2
     echo "${generated}" >&2
