@@ -1,8 +1,9 @@
-//! The window before the game runs: asks for the player's Pure disc image (or its
-//! `default.xex`) in the system's Open dialog, shows the game being prepared (src/prepare.rs),
-//! then loads the game library and starts the guest. Also shows why, if the game stops.
+//! The window before the game runs. Its home screen is where the player points the runtime at
+//! their Pure disc image (or its `default.xex`) through the system's Open dialog, or plays the
+//! one they chose before. It shows the game being prepared (src/prepare.rs), then loads the game
+//! library and starts the guest. Also shows why, if the game stops.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -14,13 +15,16 @@ use crate::progress::Progress;
 use crate::{game_module, guest, status};
 
 const TITLE: &str = "Pure";
-const OPEN_LABEL: &str = "Open Pure disc image or default.xex…";
+// Bevy's embedded font has no ellipsis character, so it is spelled with full stops.
+const OPEN_LABEL: &str = "Open Pure disc image or default.xex...";
+const PLAY_LABEL: &str = "Play";
 const DIALOG_TITLE: &str = "Open your copy of Pure";
 const FILTER_NAME: &str = "Pure disc image or executable";
 const FILTER_EXTENSIONS: [&str; 2] = ["iso", "xex"];
 const CHOOSE_PROMPT: &str = "Choose your own copy of Pure (World release): its disc image, or the \
     default.xex of a disc you copied. The first time, the game is translated and compiled on this \
     computer, which takes about 10 to 15 minutes; after that it starts at once.";
+const READY_PROMPT: &str = "Ready to play your copy of Pure:";
 const PREPARE_THREAD_NAME: &str = "prepare-game";
 
 const TITLE_SIZE: f32 = 48.0;
@@ -42,7 +46,10 @@ const TEXT_COLOR: Color = Color::WHITE;
 /// Where the player is between opening the window and playing.
 #[derive(Resource)]
 enum Launch {
-    Choosing,
+    /// The home screen: the player opens a disc image, or plays the one they chose before.
+    Choosing {
+        remembered: Option<PathBuf>,
+    },
     /// The Open dialog is up.
     Picking(Task<Option<PathBuf>>),
     Preparing {
@@ -55,9 +62,13 @@ enum Launch {
     Stopped,
 }
 
-/// The game to open at start-up, if any: from the command line, or the one opened last time.
+/// What the window starts with: a game named on the command line starts at once; otherwise the
+/// home screen offers the one opened last time.
 #[derive(Resource)]
-pub struct StartWith(pub Option<PathBuf>);
+pub struct Startup {
+    pub game: Option<PathBuf>,
+    pub remembered: Option<PathBuf>,
+}
 
 #[derive(Component)]
 struct Screen;
@@ -65,13 +76,30 @@ struct Screen;
 struct Message;
 #[derive(Component)]
 struct BarFill;
-/// When an element of the screen is visible.
+/// When an element of the screen is shown; hidden ones take no space.
 #[derive(Component)]
 struct ShownWhen(fn(&Launch) -> bool);
+/// What a button does.
+#[derive(Component, Clone, Copy)]
+enum Action {
+    /// Shows the system's Open dialog.
+    Open,
+    /// Plays the game chosen before.
+    Play,
+}
 
-/// Openable: waiting for a choice, or after a failure.
+/// Openable: on the home screen, or after a failure.
 fn can_open(launch: &Launch) -> bool {
-    matches!(launch, Launch::Choosing | Launch::Failed(_))
+    matches!(launch, Launch::Choosing { .. } | Launch::Failed(_))
+}
+
+fn can_play(launch: &Launch) -> bool {
+    matches!(
+        launch,
+        Launch::Choosing {
+            remembered: Some(_)
+        }
+    )
 }
 
 fn has_count(launch: &Launch) -> bool {
@@ -93,16 +121,11 @@ pub struct LauncherPlugin;
 
 impl Plugin for LauncherPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(Launch::Choosing)
+        app.insert_resource(Launch::Choosing { remembered: None })
             .add_systems(Startup, (spawn_screen, begin).chain())
             .add_systems(
                 Update,
-                (
-                    open_button,
-                    advance,
-                    (show_elements, show_message, show_count),
-                )
-                    .chain(),
+                (buttons, advance, (show_elements, show_message, show_count)).chain(),
             );
     }
 }
@@ -146,7 +169,6 @@ fn spawn_screen(mut commands: Commands) {
                         ..default()
                     },
                     BackgroundColor(BAR_TRACK_COLOR),
-                    Visibility::Hidden,
                 ))
                 .with_child((
                     BarFill,
@@ -157,29 +179,34 @@ fn spawn_screen(mut commands: Commands) {
                     },
                     BackgroundColor(BAR_FILL_COLOR),
                 ));
-            screen
-                .spawn((
-                    ShownWhen(can_open),
-                    Button,
-                    Node {
-                        padding: BUTTON_PADDING,
-                        ..default()
-                    },
-                    BackgroundColor(BUTTON_COLOR),
-                ))
-                .with_child((
-                    Text::new(OPEN_LABEL),
-                    text(TEXT_SIZE),
-                    TextColor(TEXT_COLOR),
-                ));
+            for (action, shown_when, label) in [
+                (Action::Play, ShownWhen(can_play), PLAY_LABEL),
+                (Action::Open, ShownWhen(can_open), OPEN_LABEL),
+            ] {
+                screen
+                    .spawn((
+                        action,
+                        shown_when,
+                        Button,
+                        Node {
+                            padding: BUTTON_PADDING,
+                            ..default()
+                        },
+                        BackgroundColor(BUTTON_COLOR),
+                    ))
+                    .with_child((Text::new(label), text(TEXT_SIZE), TextColor(TEXT_COLOR)));
+            }
         });
 }
 
-/// Opens the game named at start-up, or waits for the player to choose one.
-fn begin(start_with: Res<StartWith>, mut launch: ResMut<Launch>) {
-    if let Some(path) = &start_with.0 {
-        *launch = start_preparing(path.clone());
-    }
+/// Starts the game named on the command line, or shows the home screen.
+fn begin(startup: Res<Startup>, mut launch: ResMut<Launch>) {
+    *launch = match &startup.game {
+        Some(game) => start_preparing(game.clone()),
+        None => Launch::Choosing {
+            remembered: startup.remembered.clone(),
+        },
+    };
 }
 
 fn start_preparing(source: PathBuf) -> Launch {
@@ -198,17 +225,27 @@ fn start_preparing(source: PathBuf) -> Launch {
     }
 }
 
-/// The Open button (the launcher's only button) shows the system's Open dialog.
-fn open_button(
-    mut buttons: Query<(&Interaction, &mut BackgroundColor), Changed<Interaction>>,
+fn buttons(
+    mut buttons: Query<(&Interaction, &Action, &mut BackgroundColor), Changed<Interaction>>,
     mut launch: ResMut<Launch>,
 ) {
-    for (interaction, mut color) in &mut buttons {
+    for (interaction, action, mut color) in &mut buttons {
         *color = BackgroundColor(match interaction {
             Interaction::Hovered => BUTTON_HOVER_COLOR,
             _ => BUTTON_COLOR,
         });
-        if *interaction == Interaction::Pressed && can_open(&launch) {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let (
+            Action::Play,
+            Launch::Choosing {
+                remembered: Some(game),
+            },
+        ) = (action, &*launch)
+        {
+            *launch = start_preparing(game.clone());
+        } else if matches!(action, Action::Open) && can_open(&launch) {
             let dialog = rfd::AsyncFileDialog::new()
                 .set_title(DIALOG_TITLE)
                 .add_filter(FILTER_NAME, &FILTER_EXTENSIONS);
@@ -228,7 +265,10 @@ fn advance(mut launch: ResMut<Launch>) {
     let next = match &mut *launch {
         Launch::Picking(task) => match block_on(poll_once(task)) {
             Some(Some(path)) => Some(start_preparing(path)),
-            Some(None) => Some(Launch::Choosing),
+            // Cancelled: back to the home screen, still offering the game chosen before.
+            Some(None) => Some(Launch::Choosing {
+                remembered: prepare::remembered(),
+            }),
             None => None,
         },
         Launch::Preparing { result, .. } => result.lock().unwrap().take().map(|prepared| {
@@ -242,7 +282,7 @@ fn advance(mut launch: ResMut<Launch>) {
             }
         }),
         Launch::Running => status::stop_reason().map(|_| Launch::Stopped),
-        Launch::Choosing | Launch::Failed(_) | Launch::Stopped => None,
+        Launch::Choosing { .. } | Launch::Failed(_) | Launch::Stopped => None,
     };
     if let Some(next) = next {
         *launch = next;
@@ -254,12 +294,12 @@ fn start(prepared: &Prepared) -> Result<(), String> {
     guest::start(&prepared.xex)
 }
 
-fn show_elements(launch: Res<Launch>, mut elements: Query<(&ShownWhen, &mut Visibility)>) {
-    for (shown_when, mut visibility) in &mut elements {
-        *visibility = if (shown_when.0)(&launch) {
-            Visibility::Inherited
+fn show_elements(launch: Res<Launch>, mut elements: Query<(&ShownWhen, &mut Node)>) {
+    for (shown_when, mut node) in &mut elements {
+        node.display = if (shown_when.0)(&launch) {
+            Display::Flex
         } else {
-            Visibility::Hidden
+            Display::None
         };
     }
 }
@@ -277,7 +317,12 @@ fn show_message(
             "The game stopped: {}",
             status::stop_reason().unwrap_or_default()
         ),
-        Launch::Choosing | Launch::Picking(_) | Launch::Running => CHOOSE_PROMPT.to_string(),
+        Launch::Choosing {
+            remembered: Some(game),
+        } => format!("{READY_PROMPT}\n{}", describe(game)),
+        Launch::Choosing { remembered: None } | Launch::Picking(_) | Launch::Running => {
+            CHOOSE_PROMPT.to_string()
+        }
     };
     let problem = matches!(*launch, Launch::Failed(_) | Launch::Stopped);
     color.0 = if problem { ERROR_COLOR } else { TEXT_COLOR };
@@ -291,4 +336,16 @@ fn show_message(
 
 fn show_count(launch: Res<Launch>, fill: Single<&mut Node, With<BarFill>>) {
     fill.into_inner().width = Val::Percent(progress_fraction(&launch).unwrap_or(0.0) * PERCENT);
+}
+
+/// A chosen game as the home screen names it: the file, then the folder it is in.
+fn describe(game: &Path) -> String {
+    let name = game
+        .file_name()
+        .unwrap_or(game.as_os_str())
+        .to_string_lossy();
+    match game.parent() {
+        Some(folder) => format!("{name}\n(in {})", folder.display()),
+        None => name.into_owned(),
+    }
 }

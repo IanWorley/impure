@@ -20,8 +20,10 @@ Playing
 1. Start pure-runtime (pure-runtime.exe on Windows).
      macOS: the first time, right-click it and choose Open: the build is not signed.
      Windows: if SmartScreen warns you, choose "More info", then "Run anyway".
-2. Click "Open Pure disc image or default.xex…" and choose your disc image (.iso).
-3. Wait while it copies the game's files and builds the game. Next time it starts at once.
+2. Click "Open Pure disc image or default.xex..." and choose your disc image (.iso).
+3. Wait while it copies the game's files and builds the game.
+4. Next time, the window offers the same disc image: click Play, which starts at once. To use a
+   different copy, click "Open Pure disc image or default.xex..." again.
 
 Keyboard: W throttle, S brake, A/D steer, I/J/K/L right stick, Enter or Space = A,
 Backspace = B, X, Y, Q/E shoulders, Escape = Start, Tab = Back, arrow keys = D-pad.
@@ -32,8 +34,8 @@ Your saves and the prepared game live in:
   Windows   %APPDATA%\pure-runtime
   Linux     ~/.local/share/pure-runtime
 
-To open a different copy, start it with --choose. To build the game in a terminal instead, with
-progress printed there: pure-runtime <your.iso> --build-game
+To build the game in a terminal instead, with progress printed there:
+pure-runtime <your.iso> --build-game
 
 Licenses: see LICENSE (this project, MIT), THIRD_PARTY_NOTICES.md and licenses/.
 Pure is a trademark of its owner. This project is not affiliated with Disney, Black Rock Studio

@@ -109,11 +109,9 @@ impl Options {
         Some(options)
     }
 
-    /// The game to open without asking: the one named, else the last one opened.
-    fn start_with(&self) -> Option<PathBuf> {
-        self.game
-            .clone()
-            .or_else(|| (!self.choose).then(prepare::remembered).flatten())
+    /// The game opened last time, unless the player asked to choose again.
+    fn remembered(&self) -> Option<PathBuf> {
+        (!self.choose).then(prepare::remembered).flatten()
     }
 }
 
@@ -152,7 +150,10 @@ fn main() -> AppExit {
         unfocused_mode: UpdateMode::reactive(WINDOW_UPDATE_INTERVAL),
     })
     .insert_resource(ClearColor(BACKGROUND_COLOR))
-    .insert_resource(launcher::StartWith(options.start_with()))
+    .insert_resource(launcher::Startup {
+        game: options.game.clone(),
+        remembered: options.remembered(),
+    })
     .insert_resource(options)
     .add_plugins((display::DisplayPlugin, launcher::LauncherPlugin))
     .add_systems(Update, (play_input_script, read_controller).chain())
@@ -166,7 +167,7 @@ fn main() -> AppExit {
 /// `--build-game`: prepares the game with progress in the terminal, for scripts and for anyone
 /// who would rather wait there than in the window.
 fn build_game(options: &Options) -> AppExit {
-    let Some(source) = options.start_with() else {
+    let Some(source) = options.game.clone().or_else(|| options.remembered()) else {
         eprintln!("{BUILD_GAME_FLAG} needs a disc image or default.xex\n{USAGE}");
         return AppExit::from_code(USAGE_EXIT_CODE);
     };

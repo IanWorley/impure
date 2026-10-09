@@ -392,7 +392,8 @@ mod tests {
 
     #[test]
     fn forwards_imports_but_not_recompiled_functions() {
-        let mapping = "{ 0x82000000, __imp__sub_example },\n{ 0x82000010, __imp__NtClose },";
+        // A recompiled function's name, not a real one: the content guard rejects those.
+        let mapping = "{ 0x0, __imp__sub_example },\n{ 0x10, __imp__NtClose },";
         assert_eq!(
             import_forwarders(mapping),
             "#include \"host.h\"\n\

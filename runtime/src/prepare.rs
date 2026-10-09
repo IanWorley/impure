@@ -14,7 +14,7 @@ use crate::{builder, data_dir, xiso};
 const XEX_NAME: &str = "default.xex";
 const ISO_EXTENSION: &str = "iso";
 const DISC_DIRECTORY: &str = "disc";
-/// Holds the path of the last game that started, which opens again next time.
+/// Holds the path of the last game that started, which the home screen offers next time.
 const LAST_GAME_FILE: &str = "last-game";
 
 /// A game ready to start.
@@ -35,17 +35,20 @@ pub fn prepare(source: &Path, progress: &Progress) -> Result<Prepared, String> {
         (source.to_path_buf(), checked_sha256(&bytes, source)?)
     };
     let library = builder::ensure(&xex, &sha256, progress)?;
-    // Not being able to remember the game only means asking again next time.
-    let _ = fs::create_dir_all(data_dir::root()).and_then(|_| {
+    // What the player chose (their disc image, not the copy made from it), as an absolute path,
+    // so the home screen offers it whatever directory the runtime is started from. Not being able
+    // to remember it only means choosing again next time.
+    let _ = std::path::absolute(source).and_then(|chosen| {
+        fs::create_dir_all(data_dir::root())?;
         fs::write(
             data_dir::root().join(LAST_GAME_FILE),
-            xex.to_string_lossy().as_bytes(),
+            chosen.to_string_lossy().as_bytes(),
         )
     });
     Ok(Prepared { xex, library })
 }
 
-/// The game that started last time, if its files are still there.
+/// The disc image or executable that started last time, if it is still there.
 pub fn remembered() -> Option<PathBuf> {
     let path = PathBuf::from(fs::read_to_string(data_dir::root().join(LAST_GAME_FILE)).ok()?);
     path.is_file().then_some(path)
