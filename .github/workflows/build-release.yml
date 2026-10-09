@@ -1,6 +1,7 @@
 name: Build release
 
-# Builds one release archive per platform (tools/package-release.sh). Called by release.yml.
+# Builds one release archive per platform (tools/package-release.sh). Called by release.yml; run
+# it by hand from the Actions tab to try the packaging on a branch without publishing anything.
 # Nothing here has the game: the runtime never contains game code, and players build the game
 # library from their own copy on their own machine.
 
@@ -9,6 +10,12 @@ on:
     inputs:
       version:
         description: The release version, for archive names (the tag without its v)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: A version for the archive names (for example 0.1.0-test)
         required: true
         type: string
 
@@ -74,6 +81,15 @@ jobs:
       - name: libclang for FFmpeg's bindings (Windows)
         if: runner.os == 'Windows'
         run: echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+      # With the MSVC environment set, rustc takes link.exe from PATH, where Git Bash's coreutils
+      # `link` comes first. Name MSVC's linker for this runner's target outright.
+      - name: MSVC linker for cargo (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          linker="${VCToolsInstallDir}bin\\Host${VSCMD_ARG_HOST_ARCH}\\${VSCMD_ARG_TGT_ARCH}\\link.exe"
+          [[ -f "$(cygpath -u "$linker")" ]] || { echo "error: no MSVC linker at $linker" >&2; exit 1; }
+          target="$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')"
+          echo "CARGO_TARGET_${target}_LINKER=$linker" >> "$GITHUB_ENV"
 
       - name: Cache XenonRecomp
         id: xenon-cache
@@ -115,7 +131,11 @@ jobs:
         env:
           FFMPEG_PREFIX: ${{ github.workspace }}/ffmpeg/prefix
           XENON_RECOMP_DIR: ${{ github.workspace }}/xenon
-        run: echo "archive=$(tools/package-release.sh "${{ inputs.version }}" "${{ matrix.platform }}" dist | tail -1)" >> "$GITHUB_OUTPUT"
+          VERSION: ${{ inputs.version }}
+        # Assigned first so a failed packaging fails this step (echo "$(...)" would hide it).
+        run: |
+          archive="$(tools/package-release.sh "$VERSION" "${{ matrix.platform }}" dist | tail -1)"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
