@@ -51,12 +51,19 @@ thread_local! {
     static FFMPEG_ERROR: Cell<bool> = const { Cell::new(false) };
 }
 
+/// The `va_list` parameter of FFmpeg's log callback. x86-64's System V `va_list` is a
+/// one-element array, which decays to a pointer as a parameter; elsewhere it is passed as is.
+#[cfg(all(target_arch = "x86_64", not(windows)))]
+type LogArguments = *mut ffmpeg::__va_list_tag;
+#[cfg(not(all(target_arch = "x86_64", not(windows))))]
+type LogArguments = ffmpeg::va_list;
+
 /// Notes FFmpeg's errors instead of printing them: a frame decoded the wrong way logs several.
 unsafe extern "C" fn log_callback(
     _: *mut std::ffi::c_void,
     level: std::ffi::c_int,
     _: *const std::ffi::c_char,
-    _: ffmpeg::va_list,
+    _: LogArguments,
 ) {
     if level <= ffmpeg::AV_LOG_ERROR as std::ffi::c_int {
         FFMPEG_ERROR.with(|error| error.set(true));
