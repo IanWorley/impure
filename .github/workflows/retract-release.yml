@@ -1,0 +1,39 @@
+name: Retract release
+
+# Undoes a release. Deleting its tag (`git push --delete origin v1.2.0`) deletes the release
+# automatically; or run this workflow by hand from the Actions tab with the tag, which deletes
+# both. GitHub only runs the tag-deletion trigger from the default branch's copy of this file.
+
+on:
+  delete:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to retract (for example v1.2.0-rc.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  retract:
+    name: Retract ${{ inputs.tag || github.event.ref }}
+    if: github.event_name == 'workflow_dispatch' || github.event.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.ref }}
+          BY_HAND: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "No release for $TAG; nothing to retract."
+            exit 0
+          fi
+          flags=()
+          # Run by hand, the tag goes too; after a tag deletion there is none left to remove.
+          [[ "$BY_HAND" == true ]] && flags+=(--cleanup-tag)
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes "${flags[@]}"
+          echo "Retracted the release $TAG."

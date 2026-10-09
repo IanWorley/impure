@@ -1,7 +1,8 @@
 //! Audio driver (XAudio*) imports. The console's audio driver asks each registered client for
 //! another frame of samples by calling its callback; the client answers with
 //! XAudioSubmitRenderDriverFrame. The runtime paces those callbacks at the console's frame rate
-//! from its own guest thread. Samples are not played yet; submitted frames are only counted.
+//! from its own guest thread. With the `audio` feature the submitted frames are played
+//! (audio_output.rs); without it they are only counted.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, Once};
@@ -13,6 +14,16 @@ use bevy::log::info;
 use super::{ImportCall, NO_RETURN_VALUE, threads};
 use crate::guest::{self, ThreadEnvironment};
 use crate::status;
+
+/// A submitted frame: 256 big-endian float samples of each of six channels, one channel after
+/// another (front left, front right, centre, LFE, back left, back right).
+#[cfg(feature = "audio")]
+const FRAME_CHANNELS: u32 = 6;
+#[cfg(feature = "audio")]
+const SAMPLE_SIZE: u32 = 4;
+/// How much of the centre and back channels each side of the stereo downmix takes.
+#[cfg(feature = "audio")]
+const DOWNMIX_SIDE_GAIN: f32 = 0.5;
 
 /// The console mixes 256 samples per frame at 48 kHz.
 const SAMPLES_PER_FRAME: u64 = 256;
@@ -99,12 +110,37 @@ pub(super) fn unregister_render_driver_client(call: &ImportCall) -> u32 {
     NO_RETURN_VALUE
 }
 
-/// XAudioSubmitRenderDriverFrame(driver handle, samples) -> Win32 error. Not played yet.
-pub(super) fn submit_render_driver_frame(_: &ImportCall) -> u32 {
+/// XAudioSubmitRenderDriverFrame(driver handle, samples) -> Win32 error. Played with the
+/// `audio` feature.
+pub(super) fn submit_render_driver_frame(call: &ImportCall) -> u32 {
     if FRAMES_SUBMITTED.fetch_add(1, Ordering::Relaxed) == 0 {
         info!(target: "audio", "first audio frame submitted");
     }
+    #[cfg(feature = "audio")]
+    crate::audio_output::play(&downmix(call, call.argument(1)));
+    #[cfg(not(feature = "audio"))]
+    let _ = call;
     ERROR_SUCCESS
+}
+
+/// The frame at `samples` as interleaved stereo; the LFE channel is left out.
+#[cfg(feature = "audio")]
+fn downmix(call: &ImportCall, samples: u32) -> Vec<f32> {
+    let sample = |channel: u32, index: u32| {
+        let address = samples + (channel * SAMPLES_PER_FRAME as u32 + index) * SAMPLE_SIZE;
+        f32::from_bits(call.memory.read_u32(address))
+    };
+    let [left, right, centre, back_left, back_right] = [0, 1, 2, 4, 5];
+    debug_assert!(back_right < FRAME_CHANNELS);
+    (0..SAMPLES_PER_FRAME as u32)
+        .flat_map(|index| {
+            let shared = DOWNMIX_SIDE_GAIN * sample(centre, index);
+            [
+                sample(left, index) + shared + DOWNMIX_SIDE_GAIN * sample(back_left, index),
+                sample(right, index) + shared + DOWNMIX_SIDE_GAIN * sample(back_right, index),
+            ]
+        })
+        .collect()
 }
 
 /// Asks every client for a frame each frame period, as the console's driver does.

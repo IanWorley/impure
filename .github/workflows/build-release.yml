@@ -1,0 +1,132 @@
+name: Build release
+
+# Builds one release archive per platform (tools/package-release.sh). Called by release.yml.
+# Nothing here has the game: the runtime never contains game code, and players build the game
+# library from their own copy on their own machine.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: The release version, for archive names (the tag without its v)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The XenonRecomp revision docs/tooling.md pins; tools/patches/xenonrecomp.patch applies to it.
+  XENON_RECOMP_REPOSITORY: https://github.com/hedge-dev/XenonRecomp.git
+  XENON_RECOMP_COMMIT: ddd128bcca99fe8bfbb99bea583c972351fa6ace
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { platform: linux-x86_64, os: ubuntu-24.04, msvc: "" }
+          - { platform: linux-arm64, os: ubuntu-24.04-arm, msvc: "" }
+          - { platform: macos-x86_64, os: macos-15-intel, msvc: "" }
+          - { platform: macos-arm64, os: macos-15, msvc: "" }
+          - { platform: windows-x86_64, os: windows-2025, msvc: x64 }
+          - { platform: windows-arm64, os: windows-11-arm, msvc: arm64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: No game content tracked
+        run: tools/check-no-game-content.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime
+          key: release
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      - name: Build tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang cmake ninja-build libclang-dev libasound2-dev pkg-config
+      - name: Build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - name: MSYS2 for FFmpeg's configure (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make diffutils
+      - name: libclang for FFmpeg's bindings (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+
+      - name: Cache XenonRecomp
+        id: xenon-cache
+        uses: actions/cache@v4
+        with:
+          path: xenon
+          key: xenon-${{ matrix.platform }}-${{ env.XENON_RECOMP_COMMIT }}-${{ hashFiles('tools/patches/xenonrecomp.patch') }}
+      - name: Build XenonRecomp
+        if: steps.xenon-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone "$XENON_RECOMP_REPOSITORY" xenon
+          git -C xenon checkout "$XENON_RECOMP_COMMIT"
+          git -C xenon submodule update --init --recursive
+          git -C xenon apply ../tools/patches/xenonrecomp.patch
+          if [[ "$RUNNER_OS" == Windows ]]; then compilers=(-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl);
+          else compilers=(-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++); fi
+          cmake -S xenon -B xenon/build-release -G Ninja -DCMAKE_BUILD_TYPE=Release "${compilers[@]}"
+          cmake --build xenon/build-release --target XenonAnalyse XenonRecomp --parallel
+
+      - name: Cache FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg
+          key: ffmpeg-${{ matrix.platform }}-${{ hashFiles('tools/build-ffmpeg.sh') }}
+      - name: Build FFmpeg (LGPL, WMA Pro only)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && runner.os != 'Windows'
+        run: tools/build-ffmpeg.sh ffmpeg/prefix ffmpeg/work
+      - name: Build FFmpeg (LGPL, WMA Pro only, Windows)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: msys2 {0}
+        # MSYS2's coreutils `link` would shadow the MSVC linker FFmpeg's configure looks for.
+        run: |
+          mv /usr/bin/link.exe /usr/bin/link-coreutils.exe || true
+          tools/build-ffmpeg.sh ffmpeg/prefix ffmpeg/work
+
+      - name: Package
+        id: package
+        env:
+          FFMPEG_PREFIX: ${{ github.workspace }}/ffmpeg/prefix
+          XENON_RECOMP_DIR: ${{ github.workspace }}/xenon
+        run: echo "archive=$(tools/package-release.sh "${{ inputs.version }}" "${{ matrix.platform }}" dist | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+      # The exact FFmpeg source the bundled libraries were built from, attached to the release
+      # for the LGPL (every platform builds the same tarball; one copy is enough).
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'linux-x86_64'
+        with:
+          name: release-ffmpeg-source
+          path: ffmpeg/work/ffmpeg-*.tar.xz
+          if-no-files-found: error

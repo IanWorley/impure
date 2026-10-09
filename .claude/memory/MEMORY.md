@@ -1,2 +1,2 @@
 - [Reconstruction language](reconstruction-language-cpp.md) — decomp C++; recomp = XenonRecomp C++ + Rust/Bevy runtime; full Rust deferred
-- [Runtime milestones](runtime-milestones.md) — status 2026-10-08: hang fixed and proven (7,200 s skill run); tutorial world renders; playing deferred to a GPU machine (user chose stop)
+- [Runtime milestones](runtime-milestones.md) — status 2026-10-08 pm: running natively on the M4 Mac (Metal), input scripts + frame captures, 3D ~19-26 fps release (submit thread), rides into the tutorial lap; CP thread is still the bottleneck

@@ -10,6 +10,7 @@
 //! skipped by length.
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use crate::gpu::{Draw, IndexBuffer, IndexSource, Initiator, Shader, ShaderCache, ShaderStage};
 use crate::memory::GuestMemory;
@@ -205,14 +206,17 @@ enum Step {
 /// What the processor needs from the rest of the runtime.
 pub trait Environment {
     fn memory(&self) -> &GuestMemory;
-    /// The guest address the title uses for a physical address, if it allocated it.
+    /// The guest address showing a physical address; None past the end of physical memory.
     fn guest_address(&self, physical: u32) -> Option<u32>;
     /// Reports a packet the processor does not execute.
     fn report(&self, message: String);
-    /// Records detail useful only when debugging the processor itself.
-    fn trace(&self, message: String);
+    /// Records detail useful only when debugging the processor itself. It is formatted only if
+    /// that detail is logged: the processor traces every packet and register write.
+    fn trace(&self, message: fmt::Arguments);
     /// Interrupts `cpu` with a command processor interrupt.
     fn raise_interrupt(&self, cpu: u32);
+    /// The title submitted a new command buffer through the ring.
+    fn commands_submitted(&self);
     /// Executes (or, until there is a renderer, records) a draw.
     fn draw(&self, draw: &Draw);
     /// Presents the front buffer at physical address `front_buffer`.
@@ -285,7 +289,7 @@ fn wait_condition_holds(function: u32, value: u32, reference: u32) -> bool {
 }
 
 /// Reads a word the way the GPU does, from a physical address whose low two bits pick the byte
-/// order. Unallocated memory reads as 0.
+/// order. Addresses past the end of physical memory read as 0.
 fn read_gpu_memory(environment: &impl Environment, address: u32) -> u32 {
     environment
         .guest_address(address & !ENDIAN_MASK)
@@ -301,7 +305,7 @@ fn write_gpu_memory(environment: &impl Environment, address: u32, value: u32) {
     let physical = address & !ENDIAN_MASK;
     let Some(guest) = environment.guest_address(physical) else {
         environment.report(format!(
-            "GPU memory write to unallocated physical {physical:#010x}"
+            "GPU memory write to physical {physical:#010x}, past the end of physical memory"
         ));
         return;
     };
@@ -441,7 +445,12 @@ impl CommandProcessor {
                     }
                     break;
                 }
-                Step::Call(buffer) => self.indirect_buffers.push(buffer),
+                Step::Call(buffer) => {
+                    if self.indirect_buffers.is_empty() {
+                        environment.commands_submitted();
+                    }
+                    self.indirect_buffers.push(buffer);
+                }
                 Step::Continue => {}
             }
             progressed |= !words.is_empty();
@@ -501,7 +510,7 @@ impl CommandProcessor {
     fn execute_packet(&mut self, environment: &impl Environment, words: &[u32]) -> Step {
         let header = words[0];
         let body = &words[1..];
-        environment.trace(format!("packet {header:#010x}"));
+        environment.trace(format_args!("packet {header:#010x}"));
         if PADDING_WORDS.contains(&header) {
             return Step::Continue;
         }
@@ -548,7 +557,7 @@ impl CommandProcessor {
                     ));
                     return Step::Continue;
                 };
-                environment.trace(format!(
+                environment.trace(format_args!(
                     "indirect buffer {physical:#010x}, {size_words:#x} words"
                 ));
                 return Step::Call(Buffer {
@@ -568,7 +577,7 @@ impl CommandProcessor {
                 } else {
                     value
                 };
-                environment.trace(format!("event write {data:#x} to {address:#x}"));
+                environment.trace(format_args!("event write {data:#x} to {address:#x}"));
                 write_gpu_memory(environment, address, data);
             }
             (OPCODE_EVENT_WRITE_EXT, &[_, address, ..]) => {
@@ -761,7 +770,7 @@ impl CommandProcessor {
     }
 
     fn write_register(&mut self, environment: &impl Environment, register: u32, value: u32) {
-        environment.trace(format!("register {register:#06x} = {value:#010x}"));
+        environment.trace(format_args!("register {register:#06x} = {value:#010x}"));
         // The write pointer is the CPU's: like Xenia, which keeps it outside the register file,
         // packets cannot move it.
         if register == CP_RB_WPTR {
@@ -821,6 +830,23 @@ pub fn read_register(memory: &GuestMemory, register: u32) -> u32 {
     memory.read_u32(register_address(register))
 }
 
+/// Consecutive registers from `first`, in one read: draws read thousands of constants each.
+pub fn read_registers(memory: &GuestMemory, first: u32, destination: &mut [u32]) {
+    let count = destination.len() as u32;
+    debug_assert!(
+        first + count <= REGISTER_INDEX_MASK + 1,
+        "register block wraps"
+    );
+    let mut bytes = vec![0; destination.len() * WORD_SIZE as usize];
+    memory.read_bytes(register_address(first), &mut bytes);
+    for (word, bytes) in destination
+        .iter_mut()
+        .zip(bytes.chunks_exact(WORD_SIZE as usize))
+    {
+        *word = u32::from_be_bytes(bytes.try_into().unwrap());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -855,10 +881,11 @@ mod tests {
         fn report(&self, message: String) {
             self.reports.borrow_mut().push(message);
         }
-        fn trace(&self, _: String) {}
+        fn trace(&self, _: fmt::Arguments) {}
         fn raise_interrupt(&self, cpu: u32) {
             self.interrupts.borrow_mut().push(cpu);
         }
+        fn commands_submitted(&self) {}
         fn draw(&self, draw: &Draw) {
             self.draws.borrow_mut().push(draw.clone());
         }

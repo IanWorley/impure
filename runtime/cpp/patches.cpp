@@ -2,12 +2,21 @@
 // not. Each fix replaces one recompiled function (the generated definitions are weak); the
 // original stays callable as __imp__sub_<address>.
 
-#include "ppc_recomp_shared.h"
+#include "host.h"
 
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <unordered_map>
+
+// The functions below that replace recompiled ones.
+constexpr uint32_t kTitleFixCount = 3;
+
+// Logged by the runtime at start-up (src/guest.rs).
+PURE_EXPORT uint32_t pure_title_fix_count()
+{
+    return kTitleFixCount;
+}
 
 // The generated implementations have C linkage (PPC_FUNC_IMPL).
 extern "C" PPC_FUNC(__imp__sub_82528108);

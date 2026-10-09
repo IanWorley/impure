@@ -1,6 +1,7 @@
 # XenonRecomp settings for Pure (2008), Xbox 360, base World disc, no title update.
 # default.xex SHA-256: 83c52e15c5c1abbddc5a8e695186200e82e4cbd63f6b679bfc811c62e264f33c
-# Addresses only: tools/recompile.sh prepends the [main] header and local paths.
+# Addresses only: the runtime's builder (runtime/src/builder/translate.rs) prepends the [main]
+# header and local paths.
 # Evidence for each address is recorded in docs/analysis.md.
 
 # Keep every optimization off until a recompilation runs correctly (upstream guidance).

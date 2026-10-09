@@ -3,12 +3,12 @@
 //! The console exposes physical memory through three views chosen by page size: 64 KiB pages at
 //! 0xA0000000, 16 MiB pages at 0xC0000000 and 4 KiB pages at 0xE0000000. The 4 KiB view is
 //! offset by one page: its address 0xE0000000 is physical 0x1000, and titles rely on that when
-//! they compute physical addresses themselves. All three views show the same memory (see
-//! `aliases`), so titles may read through one view what they wrote through another. One
-//! allocator assigns each physical range once, and the caller gets the address in its page
-//! size's view.
-
-use std::collections::BTreeMap;
+//! they compute physical addresses themselves. All three views show the same memory, so titles
+//! may read through one view what they wrote through another: the host maps the first two onto
+//! one block (see `aliases`), and accesses to the third are redirected into the first (see
+//! `memory::host_address`). One allocator assigns each physical range once, and the caller gets
+//! the address in its page size's view. The GPU names physical addresses, which the runtime reads
+//! through the 64 KiB-page view (see `guest_address`).
 
 use crate::address_ranges::AddressRanges;
 use crate::memory::Alias;
@@ -53,9 +53,11 @@ impl View {
     }
 }
 
-/// Where guest memory shows physical memory: each view, starting at its physical offset.
-pub fn aliases() -> [Alias; 3] {
-    [LARGE_PAGE_VIEW, HUGE_PAGE_VIEW, SMALL_PAGE_VIEW].map(|view| Alias {
+/// Where guest memory shows physical memory: the views the host maps, each starting at its
+/// physical offset. The small-page view's one-page offset is finer than many hosts can map, so it
+/// is redirected rather than mapped.
+pub fn aliases() -> [Alias; 2] {
+    [LARGE_PAGE_VIEW, HUGE_PAGE_VIEW].map(|view| Alias {
         guest_address: view.base,
         shared_offset: view.physical_offset as usize,
         length: (PHYSICAL_MEMORY_SIZE - view.physical_offset) as usize,
@@ -87,17 +89,21 @@ pub fn physical_address(address: u32) -> u32 {
     address % PHYSICAL_MEMORY_SIZE + offset
 }
 
+/// The guest address showing physical address `physical`. Every view shows the same bytes, so
+/// one serves for any allocation, and for memory the title has freed while the GPU still reads
+/// it, as the console's GPU does. None past the end of physical memory.
+pub fn guest_address(physical: u32) -> Option<u32> {
+    (physical < PHYSICAL_MEMORY_SIZE).then(|| LARGE_PAGE_VIEW.address(physical))
+}
+
 pub struct PhysicalMemory {
     allocated: AddressRanges,
-    /// The view each allocation was handed out in, keyed by its physical base.
-    views: BTreeMap<u32, View>,
 }
 
 impl PhysicalMemory {
     pub const fn new() -> Self {
         Self {
             allocated: AddressRanges::new(),
-            views: BTreeMap::new(),
         }
     }
 
@@ -120,26 +126,20 @@ impl PhysicalMemory {
         let high = (u64::from(highest) + 1).min(u64::from(PHYSICAL_MEMORY_SIZE));
         let physical = self.allocated.first_fit(low, high, size, alignment)?;
         self.allocated.insert(physical, size);
-        self.views.insert(physical, view);
         Some(view.address(physical))
     }
 
     /// Frees the allocation that starts at `address` (MmFreePhysicalMemory). Returns whether
     /// there was one.
     pub fn free(&mut self, address: u32) -> bool {
-        let physical = physical_address(address);
-        self.views.remove(&physical);
-        self.allocated.remove(physical).is_some()
+        self.allocated.remove(physical_address(address)).is_some()
     }
 
-    /// The address of a physical address in the view its allocation was handed out in. Writing
-    /// there also reaches a view the host could not alias (see `memory::GuestMemory`).
-    pub fn view_address(&self, physical: u32) -> Option<u32> {
-        if !self.allocated.covers(physical, u64::from(physical) + 1) {
-            return None;
-        }
-        let (_, &view) = self.views.range(..=physical).next_back()?;
-        Some(view.address(physical))
+    /// The size of the allocation `address` falls in, in any view, rounded up to whole pages
+    /// as it was allocated.
+    pub fn allocation_size(&self, address: u32) -> Option<u32> {
+        let (_, size) = self.allocated.containing(physical_address(address))?;
+        Some(size)
     }
 }
 
@@ -187,18 +187,36 @@ mod tests {
     }
 
     #[test]
-    fn view_address_inverts_physical_address_for_each_allocation() {
+    fn the_small_page_view_is_redirected_to_the_same_physical_bytes() {
+        const OFFSET: u32 = 0x3C;
+        let address = SMALL_PAGE_VIEW.base + OFFSET;
+        assert_eq!(
+            crate::memory::host_address(address),
+            LARGE_PAGE_VIEW.address(physical_address(address))
+        );
+    }
+
+    #[test]
+    fn allocation_size_is_the_whole_pages_allocated() {
         const OFFSET: u32 = 0x3C;
         let mut memory = PhysicalMemory::new();
         let small = allocate(&mut memory, ODD_SIZE, 0).unwrap();
-        let large = allocate(&mut memory, ODD_SIZE, Protection::LARGE_PAGES).unwrap();
-        for address in [small + OFFSET, large + OFFSET] {
-            assert_eq!(
-                memory.view_address(physical_address(address)),
-                Some(address)
-            );
-        }
-        assert_eq!(memory.view_address(PHYSICAL_MEMORY_SIZE - 1), None);
+        let rounded = ODD_SIZE.next_multiple_of(SMALL_PAGE_VIEW.page_size);
+        assert_eq!(memory.allocation_size(small + OFFSET), Some(rounded));
+        assert_eq!(memory.allocation_size(small + rounded), None);
+    }
+
+    #[test]
+    fn guest_address_shows_any_view_through_the_large_page_view() {
+        const OFFSET: u32 = 0x3C;
+        let mut memory = PhysicalMemory::new();
+        let small = allocate(&mut memory, ODD_SIZE, 0).unwrap() + OFFSET;
+        let shown = guest_address(physical_address(small)).unwrap();
+        assert_eq!(
+            crate::memory::host_address(shown),
+            crate::memory::host_address(small)
+        );
+        assert_eq!(guest_address(PHYSICAL_MEMORY_SIZE), None);
     }
 
     #[test]
@@ -206,7 +224,6 @@ mod tests {
         let mut memory = PhysicalMemory::new();
         let first = allocate(&mut memory, ODD_SIZE, 0).unwrap();
         assert!(memory.free(first));
-        assert_eq!(memory.view_address(physical_address(first)), None);
         assert!(!memory.free(first));
         assert_eq!(allocate(&mut memory, ODD_SIZE, 0), Some(first));
     }

@@ -188,13 +188,21 @@ mod tests {
     const DEVICE: &str = "game:";
     const ALIAS: &str = "\\Device\\Cdrom0";
 
+    /// What `Data/Level.bin` holds, so a test can tell it reached that file.
+    const LEVEL_CONTENTS: &[u8] = b"level";
+
     /// A fresh directory holding `Data/Level.bin`.
     fn disc(test_name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("pure-vfs-{}-{test_name}", process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("Data")).unwrap();
-        fs::write(root.join("Data").join("Level.bin"), []).unwrap();
+        fs::write(root.join("Data").join("Level.bin"), LEVEL_CONTENTS).unwrap();
         root
+    }
+
+    /// Reads the file a guest path resolves to.
+    fn read_through(vfs: &Vfs, guest_path: &str) -> Vec<u8> {
+        fs::read(vfs.resolve(guest_path).unwrap()).unwrap()
     }
 
     fn vfs(root: &Path) -> Vfs {
@@ -206,17 +214,19 @@ mod tests {
 
     #[test]
     fn paths_resolve_ignoring_case_and_device_spelling() {
+        // Compare contents, not paths: on case-insensitive hosts (macOS, Windows) the host path
+        // keeps the guest's spelling, which the host resolves just the same.
         let root = disc("case");
-        let expected = root.join("Data").join("Level.bin");
+        let disc_vfs = vfs(&root);
         assert_eq!(
-            vfs(&root).resolve("GAME:\\data\\LEVEL.BIN"),
-            Ok(expected.clone())
+            read_through(&disc_vfs, "GAME:\\data\\LEVEL.BIN"),
+            LEVEL_CONTENTS
         );
         assert_eq!(
-            vfs(&root).resolve("\\device\\cdrom0\\Data\\Level.bin"),
-            Ok(expected)
+            read_through(&disc_vfs, "\\device\\cdrom0\\Data\\Level.bin"),
+            LEVEL_CONTENTS
         );
-        assert_eq!(vfs(&root).resolve("game:"), Ok(root.clone()));
+        assert_eq!(disc_vfs.resolve("game:"), Ok(root.clone()));
         fs::remove_dir_all(root).unwrap();
     }
 

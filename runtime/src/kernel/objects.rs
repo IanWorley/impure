@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use bevy::log::{debug, info};
+
 use super::{HANDLES, ImportCall, KernelObject, NO_RETURN_VALUE, NtStatus, read_ansi_string};
 use crate::dispatcher::{self, Dispatcher, DispatcherError, ObjectType, WaitOutcome};
 use crate::{guest, status, time};
@@ -27,6 +29,8 @@ const WAIT_ALL: u32 = 0;
 const NOTIFICATION_EVENT: u32 = 0;
 const SYNCHRONIZATION_EVENT: u32 = 1;
 const GUEST_POINTER_SIZE: u32 = 4;
+/// How long a wait with no timeout may last before it is reported.
+const LONG_WAIT: Duration = Duration::from_secs(5);
 
 /// NtCreateEvent(handle out, attributes, event type, initially signaled) -> NTSTATUS.
 pub(super) fn nt_create_event(call: &ImportCall) -> u32 {
@@ -57,6 +61,7 @@ pub(super) fn nt_create_semaphore(call: &ImportCall) -> u32 {
         &[ObjectType::Semaphore],
         |object| {
             DISPATCHER.initialize_semaphore(call.memory, object, count, limit);
+            debug!(target: "semaphore", "{object:#010x} created ({count} of {limit}) by thread {:#010x} from {:#010x}", guest::current_thread(), call.return_address());
         },
     )
 }
@@ -102,7 +107,9 @@ pub(super) fn nt_clear_event(call: &ImportCall) -> u32 {
 /// NtReleaseSemaphore(handle, increment, previous count out) -> NTSTATUS.
 pub(super) fn nt_release_semaphore(call: &ImportCall) -> u32 {
     with_handle(call.argument(0), |object| {
-        match DISPATCHER.release_semaphore(call.memory, object, call.argument(1)) {
+        let released = DISPATCHER.release_semaphore(call.memory, object, call.argument(1));
+        debug!(target: "semaphore", "{object:#010x} released by {} by thread {:#010x} from {:#010x}: {released:?}", call.argument(1), guest::current_thread(), call.return_address());
+        match released {
             Ok(previous) => {
                 write_optional(call, call.argument(2), previous);
                 NtStatus::SUCCESS
@@ -154,12 +161,14 @@ pub(super) fn nt_wait_for_multiple_objects_ex(call: &ImportCall) -> u32 {
 pub(super) fn ke_initialize_semaphore(call: &ImportCall) -> u32 {
     let (semaphore, count, limit) = (call.argument(0), call.argument(1), call.argument(2));
     DISPATCHER.initialize_semaphore(call.memory, semaphore, count, limit);
+    debug!(target: "semaphore", "{semaphore:#010x} initialized ({count} of {limit}) by thread {:#010x} from {:#010x}", guest::current_thread(), call.return_address());
     NO_RETURN_VALUE
 }
 
 /// KeReleaseSemaphore(semaphore, priority increment, adjustment, wait) -> previous count.
 pub(super) fn ke_release_semaphore(call: &ImportCall) -> u32 {
     let (semaphore, adjustment) = (call.argument(0), call.argument(2));
+    debug!(target: "semaphore", "{semaphore:#010x} released by {adjustment} by thread {:#010x} from {:#010x}", guest::current_thread(), call.return_address());
     DISPATCHER
         .release_semaphore(call.memory, semaphore, adjustment)
         .unwrap_or_else(|error| halt_on(error, "KeReleaseSemaphore"))
@@ -293,13 +302,31 @@ fn read_pointer_array(call: &ImportCall, count: u32, array: u32) -> Option<Vec<u
 
 fn wait(call: &ImportCall, objects: &[u32], wait_all: bool, timeout_pointer: u32) -> u32 {
     let deadline = deadline(call, timeout_pointer);
-    let outcome = DISPATCHER.wait(
-        call.memory,
-        objects,
-        wait_all,
-        guest::current_thread(),
-        deadline,
-    );
+    let thread = guest::current_thread();
+    let wait = |deadline| DISPATCHER.wait(call.memory, objects, wait_all, thread, deadline);
+    // A wait with no timeout that lasts a while is reported once, with what it waits for: the
+    // first clue when the title's threads wait on each other forever.
+    let outcome = match deadline {
+        Some(_) => wait(deadline),
+        None => match wait(Some(Instant::now() + LONG_WAIT)) {
+            Ok(WaitOutcome::TimedOut) => {
+                let described: Vec<String> = objects
+                    .iter()
+                    .map(|&object| dispatcher::describe(call.memory, object))
+                    .collect();
+                info!(
+                    target: "wait",
+                    "thread {thread:#010x} has waited {}s from {:#010x} for {} of [{}]",
+                    LONG_WAIT.as_secs(),
+                    call.return_address(),
+                    if wait_all { "all" } else { "any" },
+                    described.join(", ")
+                );
+                wait(None)
+            }
+            outcome => outcome,
+        },
+    };
     match outcome {
         // STATUS_WAIT_0 + index.
         Ok(WaitOutcome::Satisfied(index)) => NtStatus::SUCCESS.0 + index as u32,

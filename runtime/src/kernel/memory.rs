@@ -117,15 +117,31 @@ pub(super) fn free_physical(address: u32) {
     }
 }
 
+/// Returned for an address outside every physical allocation.
+const NOT_ALLOCATED: u32 = 0;
+
+/// MmQueryAllocationSize(address) -> the size of the physical allocation it falls in. Titles
+/// call it as they free level data.
+pub(super) fn mm_query_allocation_size(call: &ImportCall) -> u32 {
+    let address = call.argument(0);
+    PHYSICAL_MEMORY
+        .lock()
+        .unwrap()
+        .allocation_size(address)
+        .unwrap_or_else(|| {
+            warn!(target: "memory", "allocation size of {address:#010x}, which is not a physical allocation");
+            NOT_ALLOCATED
+        })
+}
+
 /// MmGetPhysicalAddress(address) -> physical address.
 pub(super) fn mm_get_physical_address(call: &ImportCall) -> u32 {
     physical_memory::physical_address(call.argument(0))
 }
 
-/// The address the title uses for a physical address it allocated; see
-/// `PhysicalMemory::view_address`.
+/// The guest address showing a physical address; see `physical_memory::guest_address`.
 pub(super) fn view_address(physical: u32) -> Option<u32> {
-    PHYSICAL_MEMORY.lock().unwrap().view_address(physical)
+    physical_memory::guest_address(physical)
 }
 
 /// Page protection flags.

@@ -95,6 +95,14 @@ const BINDINGS: [(KeyCode, Binding); 21] = [
     (KeyCode::Tab, Binding::Button(BACK)),
 ];
 
+/// The bound key with this name as Bevy spells it (`Enter`, `KeyW`, `ArrowUp`), for input scripts.
+pub fn key_named(name: &str) -> Option<KeyCode> {
+    BINDINGS
+        .iter()
+        .map(|&(key, _)| key)
+        .find(|key| format!("{key:?}") == name)
+}
+
 /// Physical gamepad buttons and the Xbox 360 buttons in the same places.
 const GAMEPAD_BUTTONS: [(GamepadButton, u16); 14] = [
     (GamepadButton::South, A),

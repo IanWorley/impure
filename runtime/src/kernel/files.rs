@@ -85,6 +85,11 @@ const FILE_BASIC_INFORMATION: u32 = 4;
 const FILE_STANDARD_INFORMATION: u32 = 5;
 const FILE_POSITION_INFORMATION: u32 = 14;
 const FILE_NETWORK_OPEN_INFORMATION: u32 = 34;
+const FILE_ALLOCATION_INFORMATION: u32 = 19;
+const FILE_END_OF_FILE_INFORMATION: u32 = 20;
+/// FILE_POSITION_INFORMATION, FILE_ALLOCATION_INFORMATION and FILE_END_OF_FILE_INFORMATION are
+/// each one 64-bit value.
+const SIXTY_FOUR_BIT_INFORMATION_SIZE: u32 = 0x8;
 const BASIC_INFORMATION_SIZE: u32 = 0x28;
 const STANDARD_INFORMATION_SIZE: u32 = 0x18;
 const POSITION_INFORMATION_SIZE: u32 = 0x8;
@@ -592,6 +597,70 @@ pub(super) fn nt_query_information_file(call: &ImportCall) -> u32 {
     status.0
 }
 
+/// NtSetInformationFile(handle, I/O status out, buffer, length, class) -> NTSTATUS.
+pub(super) fn nt_set_information_file(call: &ImportCall) -> u32 {
+    let (handle, io_status, buffer, length, class) = (
+        call.argument(0),
+        call.argument(1),
+        call.argument(2),
+        call.argument(3),
+        call.argument(4),
+    );
+    let Some(KernelObject::File(object)) = HANDLES.lock().unwrap().get(handle) else {
+        return NtStatus::INVALID_HANDLE.0;
+    };
+    let required = match class {
+        FILE_BASIC_INFORMATION => BASIC_INFORMATION_SIZE,
+        FILE_POSITION_INFORMATION | FILE_ALLOCATION_INFORMATION | FILE_END_OF_FILE_INFORMATION => {
+            SIXTY_FOUR_BIT_INFORMATION_SIZE
+        }
+        _ => status::halt_guest_thread(format!(
+            "NtSetInformationFile class {class} on {:?} is not supported yet",
+            object.guest_path
+        )),
+    };
+    let status = if length < required {
+        NtStatus::INFO_LENGTH_MISMATCH
+    } else if class == FILE_BASIC_INFORMATION {
+        // Times and attributes are not kept: the host file's own stand in for them.
+        NtStatus::SUCCESS
+    } else {
+        let value = call.memory.read_i64(buffer) as u64;
+        match object.state.lock().unwrap().set_information(class, value) {
+            Ok(()) => NtStatus::SUCCESS,
+            Err(status) => status,
+        }
+    };
+    debug!(target: "file", "set information {class} on {:?} -> {:#x}", object.guest_path, status.0);
+    call.memory
+        .write_u32(io_status + IO_STATUS_STATUS, status.0);
+    call.memory.write_u32(io_status + IO_STATUS_INFORMATION, 0);
+    status.0
+}
+
+impl FileState {
+    /// Applies one of the 64-bit information classes.
+    fn set_information(&mut self, class: u32, value: u64) -> Result<(), NtStatus> {
+        if class == FILE_POSITION_INFORMATION {
+            self.position = value;
+            return Ok(());
+        }
+        let file = self.file.as_mut().ok_or(NtStatus::INVALID_DEVICE_REQUEST)?;
+        let length = file
+            .metadata()
+            .map_err(|_| NtStatus::UNEXPECTED_IO_ERROR)?
+            .len();
+        // Reserving space changes nothing visible, but an allocation smaller than the file
+        // cuts it short, as on NT.
+        let new_length = match class {
+            FILE_END_OF_FILE_INFORMATION => value,
+            _ => length.min(value),
+        };
+        file.set_len(new_length)
+            .map_err(|_| NtStatus::ACCESS_DENIED)
+    }
+}
+
 fn write_file_information(
     call: &ImportCall,
     object: &FileObject,
@@ -674,4 +743,53 @@ pub(super) fn nt_query_full_attributes_file(call: &ImportCall) -> u32 {
     };
     debug!(target: "file", "attributes of {guest_path:?} -> {:#x}", status.0);
     status.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WRITTEN: &[u8] = b"0123456789";
+    const SHORTER: u64 = 4;
+    const LONGER: u64 = 16;
+
+    fn state_with_file(name: &str) -> (FileState, PathBuf) {
+        let path = std::env::temp_dir().join(format!("pure-runtime-{name}-{}", std::process::id()));
+        fs::write(&path, WRITTEN).unwrap();
+        let file = File::options().read(true).write(true).open(&path).unwrap();
+        let state = FileState {
+            file: Some(file),
+            position: 0,
+            listing: None,
+        };
+        (state, path)
+    }
+
+    #[test]
+    fn allocation_only_ever_cuts_the_file_short() {
+        let (mut state, path) = state_with_file("allocation");
+        state
+            .set_information(FILE_ALLOCATION_INFORMATION, LONGER)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), WRITTEN.len() as u64);
+        state
+            .set_information(FILE_ALLOCATION_INFORMATION, SHORTER)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), SHORTER);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn end_of_file_sets_the_length_either_way() {
+        let (mut state, path) = state_with_file("end-of-file");
+        state
+            .set_information(FILE_END_OF_FILE_INFORMATION, LONGER)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), LONGER);
+        state
+            .set_information(FILE_END_OF_FILE_INFORMATION, SHORTER)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), SHORTER);
+        fs::remove_file(path).unwrap();
+    }
 }

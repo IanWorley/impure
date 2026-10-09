@@ -23,7 +23,7 @@ Preconditions:
 - **Clean repo.** Run `tools/check-no-game-content.sh; echo "exit $?"` in the real checkout. Output `No game content tracked.`, exit `0`.
 - **Forbidden name.** `touch "$probe/x.o"; git -C "$probe" add x.o; "$probe/tools/check-no-game-content.sh"; echo "exit $?"`. Lists `x.o`, exit `1`.
 - **XEX magic.** `printf 'XEX2rest' > "$probe/harmless.txt"; git -C "$probe" add harmless.txt; "$probe/tools/check-no-game-content.sh"`. Reports `harmless.txt starts with the XEX magic`.
-- **Generated marker.** Copy one line from any `local/recomp/ppc/ppc_recomp.*.cpp` into `"$probe/marker.txt"` (e.g. `grep -m1 -h '^PPC_FUNC_' local/recomp/ppc/ppc_recomp.0.cpp > "$probe/marker.txt"`), stage it, and run the guard. Reports `contain XenonRecomp output`.
+- **Generated marker.** Copy one line from any generated `ppc_recomp.*.cpp` in the game library's translation (`<data directory>/games/<SHA-256>/recomp/ppc/`) into `"$probe/marker.txt"` (e.g. `grep -m1 -h '^PPC_FUNC_' "$HOME/Library/Application Support/pure-runtime"/games/*/recomp/ppc/ppc_recomp.0.cpp > "$probe/marker.txt"`), stage it, and run the guard. Reports `contain XenonRecomp output`.
 - **Too large.** `head -c 3000000 /dev/zero > "$probe/big.txt"; git -C "$probe" add big.txt; "$probe/tools/check-no-game-content.sh"`. Reports `large files are not allowed`.
 - **Cleanup.** `rm -rf "$probe"` after saving outputs to `local/verification/<ts>-guard/`.
 

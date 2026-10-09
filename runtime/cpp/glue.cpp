@@ -2,7 +2,7 @@
 // Contains no game code: it maps the user's own executable into guest memory, fills the
 // guest-address -> host-function table, and starts guest code with a prepared context.
 
-#include "ppc_recomp_shared.h"
+#include "host.h"
 
 #include <image.h>
 #include <xex.h>
@@ -52,31 +52,35 @@ std::string ImportName(std::string_view library, const std::unordered_map<size_t
 
 }
 
-extern "C" {
+const PureHost* pure_host = nullptr;
 
 // Where the lookup table lies, for the crash reporter (src/crash.rs). Generated indirect calls
 // index the table without a bounds check, so a call to an address outside the code range faults
 // past it, and the faulting address says which address was called.
-extern const uint64_t pure_lookup_table_offset = PPC_IMAGE_BASE + PPC_IMAGE_SIZE;
-extern const uint32_t pure_code_base = PPC_CODE_BASE;
-extern const uint32_t pure_code_size = PPC_CODE_SIZE;
+PURE_EXPORT const uint64_t pure_lookup_table_offset = PPC_IMAGE_BASE + PPC_IMAGE_SIZE;
+PURE_EXPORT const uint32_t pure_code_base = PPC_CODE_BASE;
+PURE_EXPORT const uint32_t pure_code_size = PPC_CODE_SIZE;
 
-// Implemented in Rust (src/kernel/mod.rs): returns the guest address the slot should point to.
-uint32_t pure_resolve_variable_import(const char* name);
-// Implemented in Rust (src/kernel/mod.rs): reports the call and stops the guest thread.
-[[noreturn]] void pure_unmapped_call_halt(uint32_t target, uint32_t return_address);
+// Takes the runtime's callbacks and returns the version this library was built against, which
+// the runtime checks before using anything else.
+PURE_EXPORT uint32_t pure_attach_host(const PureHost* host)
+{
+    pure_host = host;
+    return kPureHostAbiVersion;
+}
 
 // Every lookup-table slot without a recompiled function points here, so an indirect call to such
 // an address stops the guest with a report instead of jumping through a null host pointer.
 // Indirect calls go through ctr, which therefore holds the target.
-PPC_FUNC(pure_unmapped_call)
+extern "C" PPC_FUNC(pure_unmapped_call)
 {
-    pure_unmapped_call_halt(ctx.ctr.u32, uint32_t(ctx.lr));
+    pure_host->unmapped_call_halt(ctx.ctr.u32, uint32_t(ctx.lr));
+    __builtin_unreachable();
 }
 
 // Copies the executable's image into guest memory and resolves import slots.
 // Returns the entry point, or 0 if the executable does not match the generated code.
-uint32_t pure_guest_load(const uint8_t* xex, size_t xex_size, uint8_t* base)
+PURE_EXPORT uint32_t pure_guest_load(const uint8_t* xex, size_t xex_size, uint8_t* base)
 {
     Image image = Image::ParseImage(xex, xex_size);
     if (image.data == nullptr || image.base != PPC_IMAGE_BASE || image.size != PPC_IMAGE_SIZE)
@@ -135,7 +139,7 @@ uint32_t pure_guest_load(const uint8_t* xex, size_t xex_size, uint8_t* base)
             }
 
             const std::string name = ImportName(libraryName, names, record & kImportOrdinalMask);
-            PPC_STORE_U32(slotAddress, pure_resolve_variable_import(name.c_str()));
+            PPC_STORE_U32(slotAddress, pure_host->resolve_variable_import(name.c_str()));
         }
         library = reinterpret_cast<const Xex2ImportLibrary*>(descriptors + library->numberOfImports);
     }
@@ -145,7 +149,7 @@ uint32_t pure_guest_load(const uint8_t* xex, size_t xex_size, uint8_t* base)
 
 // Runs a guest function with two arguments to completion on the calling host thread, and
 // returns its result (r3).
-uint32_t pure_guest_run(uint8_t* base, uint32_t function, uint32_t stack_top, uint32_t pcr,
+PURE_EXPORT uint32_t pure_guest_run(uint8_t* base, uint32_t function, uint32_t stack_top, uint32_t pcr,
     uint32_t argument0, uint32_t argument1)
 {
     PPCContext ctx{};
@@ -162,7 +166,7 @@ uint32_t pure_guest_run(uint8_t* base, uint32_t function, uint32_t stack_top, ui
 
 // Register access for import handlers, which see the context as an opaque pointer.
 // Only the registers the guest ABI uses for arguments and returns are exposed.
-uint64_t pure_ctx_argument(const PPCContext* ctx, uint32_t index)
+PURE_EXPORT uint64_t pure_ctx_argument(const PPCContext* ctx, uint32_t index)
 {
     switch (index)
     {
@@ -178,19 +182,17 @@ uint64_t pure_ctx_argument(const PPCContext* ctx, uint32_t index)
     }
 }
 
-void pure_ctx_set_return(PPCContext* ctx, uint64_t value)
+PURE_EXPORT void pure_ctx_set_return(PPCContext* ctx, uint64_t value)
 {
     ctx->r3.u64 = value;
 }
 
-uint32_t pure_ctx_stack_pointer(const PPCContext* ctx)
+PURE_EXPORT uint32_t pure_ctx_stack_pointer(const PPCContext* ctx)
 {
     return ctx->r1.u32;
 }
 
-uint32_t pure_ctx_return_address(const PPCContext* ctx)
+PURE_EXPORT uint32_t pure_ctx_return_address(const PPCContext* ctx)
 {
     return uint32_t(ctx->lr);
-}
-
 }

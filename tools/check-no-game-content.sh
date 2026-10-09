@@ -7,8 +7,8 @@ set -euo pipefail
 # Nothing in this repository should come close to this size; game files and generated code do.
 readonly MAX_TRACKED_FILE_BYTES=$((2 * 1024 * 1024))
 # Disc images, archives, executables, Bink video, XMA/XACT audio, raw dumps, compiled objects and
-# libraries, and XenonRecomp's output names.
-readonly FORBIDDEN_PATTERN='\.(iso|7z|xex|xexp|bik|xma|xwb|xsb|xgs|bin|o|obj|a|lib)$|(^|/)ppc_recomp\.[0-9]+\.cpp$|(^|/)ppc_func_mapping\.cpp$|(^|/)(originals|local)/'
+# libraries (the game library the runtime builds among them), and XenonRecomp's output names.
+readonly FORBIDDEN_PATTERN='\.(iso|7z|xex|xexp|bik|xma|xwb|xsb|xgs|bin|o|obj|a|lib|dylib|so|dll)$|(^|/)ppc_recomp\.[0-9]+\.cpp$|(^|/)ppc_(func_mapping\.cpp|config\.h)$|(^|/)(originals|local)/'
 # Every recompiled function is emitted as PPC_FUNC_IMPL(__imp__sub_<8 hex digits>). Committed
 # glue and build code name the PPC_FUNC macro and the bare `__imp__sub_` prefix, never these.
 readonly GENERATED_BODY_PATTERN='PPC_FUNC_IMPL\('

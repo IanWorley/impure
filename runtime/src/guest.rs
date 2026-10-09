@@ -10,11 +10,11 @@ use bevy::log::info;
 use sha2::{Digest, Sha256};
 
 use crate::memory::{GuestHeap, GuestMemory};
-use crate::physical_memory;
 use crate::xex_header;
+use crate::{game_module, physical_memory};
 
 /// SHA-256 of the base World disc default.xex (no title update) the generated code came from.
-const EXPECTED_XEX_SHA256: &str =
+pub const EXPECTED_XEX_SHA256: &str =
     "83c52e15c5c1abbddc5a8e695186200e82e4cbd63f6b679bfc811c62e264f33c";
 
 /// Runtime-owned guest structures live below the executable image (based at 0x82000000), and
@@ -58,18 +58,6 @@ thread_local! {
     static CURRENT_THREAD: Cell<u32> = const { Cell::new(0) };
 }
 
-unsafe extern "C" {
-    fn pure_guest_load(xex: *const u8, xex_size: usize, base: *mut u8) -> u32;
-    fn pure_guest_run(
-        base: *mut u8,
-        function: u32,
-        stack_top: u32,
-        pcr: u32,
-        argument0: u32,
-        argument1: u32,
-    ) -> u32;
-}
-
 /// The guest address space. Only available once the guest has started.
 pub fn memory() -> &'static GuestMemory {
     &GUEST.get().expect("the guest has not started").memory
@@ -110,11 +98,13 @@ pub fn start(xex_path: &Path) -> Result<(), String> {
         &physical_memory::aliases(),
     )
     .map_err(|error| format!("cannot map guest memory: {error}"))?;
-    for alias in unaliased {
-        info!(
-            "physical memory view at {:#010x} is not aliased: this host cannot map memory at its offset",
+    // The GPU reads every allocation through one view (see `physical_memory::guest_address`),
+    // so the views must share their memory.
+    if let Some(alias) = unaliased.first() {
+        return Err(format!(
+            "physical memory view at {:#010x} cannot be shared: this host cannot map memory at its offset",
             alias.guest_address
-        );
+        ));
     }
     let heap = Mutex::new(GuestHeap::new(SYSTEM_HEAP_BASE, SYSTEM_HEAP_SIZE));
     GUEST
@@ -124,11 +114,16 @@ pub fn start(xex_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     crate::crash::install(guest.memory.base());
 
+    let module = game_module::get();
     // SAFETY: xex is the whole file, and base maps the entire guest address space.
-    let entry = unsafe { pure_guest_load(xex.as_ptr(), xex.len(), guest.memory.base()) };
+    let entry = unsafe { (module.guest_load)(xex.as_ptr(), xex.len(), guest.memory.base()) };
     if entry == 0 {
         return Err("the executable does not match the generated code's image layout".to_string());
     }
+
+    // SAFETY: a plain function with no arguments.
+    let title_fixes = unsafe { (module.title_fix_count)() };
+    info!("{title_fixes} title fixes in place (cpp/patches.cpp)");
 
     load_xex_header(guest, &xex)?;
     let main_thread = crate::kernel::start_main_thread(entry)?;
@@ -222,7 +217,7 @@ pub fn call(environment: ThreadEnvironment, function: u32, arguments: [u32; 2]) 
     // SAFETY: the image is loaded and the function table filled by pure_guest_load, and the
     // mapping lives for the rest of the process.
     unsafe {
-        pure_guest_run(
+        (game_module::get().guest_run)(
             memory().base(),
             function,
             environment.stack_top,

@@ -1,5 +1,6 @@
 # Jump tables XenonAnalyse misses because nops are interleaved with the dispatch sequence.
-# tools/recompile.sh appends these to XenonAnalyse's output. Evidence is in docs/analysis.md.
+# The runtime's builder (runtime/src/builder/translate.rs) appends these to XenonAnalyse's
+# output. Evidence is in docs/analysis.md.
 
 # Byte offsets at 0x820BEDE8 added to 0x829FCF00. The index is masked to 6 bits, but only the
 # first nine table bytes are word-aligned case offsets; the rest is unrelated data.

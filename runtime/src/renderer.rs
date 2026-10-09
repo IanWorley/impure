@@ -16,15 +16,16 @@
 //! are full: a submission and a pass per draw cost more than most draws.
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use bevy::log::{debug, info, warn};
 use wgpu::util::DeviceExt;
 
-use crate::command_processor::read_register;
+use crate::command_processor::{read_register, read_registers};
 use crate::edram::{self, Rectangle, Surface};
 use crate::gpu::{
     Draw, EDRAM_MODE_COPY, EDRAM_MODE_MASK, FETCH_CONSTANT_WORDS, FETCH_CONSTANTS, IndexBuffer,
@@ -33,6 +34,7 @@ use crate::gpu::{
 use crate::memory::GuestMemory;
 use crate::physical_memory;
 use crate::shader::{Instruction, Program};
+use crate::submitter::{Readback, Recycled, Submitter, Uploads, Work};
 use crate::texture::{self, HostFormat};
 use crate::translate::{self, VertexEntry};
 
@@ -50,6 +52,31 @@ static DISPLAY: Mutex<Option<wgpu::Texture>> = Mutex::new(None);
 
 pub fn set_display(texture: wgpu::Texture) {
     *DISPLAY.lock().unwrap() = Some(texture);
+}
+
+/// Where to save the next presented frames, as input scripts ask.
+static CAPTURES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Saves the next frame the title presents, as the window shows it, to a PNG file at `path`.
+/// It reads the display texture itself, so it needs no window system support and works while
+/// the window is hidden.
+pub fn capture_next_frame(path: PathBuf) {
+    CAPTURES.lock().unwrap().push(path);
+}
+
+/// Where to save the resolves of the next frame the title starts, as input scripts ask.
+static RESOLVE_DUMPS: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Saves every resolve of the next whole frame, in order, as `<prefix>-<n>-<address>.png`: the
+/// passes a frame's picture is built from, for finding which one goes wrong.
+pub fn dump_next_frame_resolves(prefix: PathBuf) {
+    *RESOLVE_DUMPS.lock().unwrap() = Some(prefix);
+}
+
+/// A frame whose resolves are being saved.
+struct ResolveDump {
+    prefix: PathBuf,
+    readbacks: Vec<Readback>,
 }
 
 /// Runs `action` on the renderer, if rendering has started.
@@ -87,6 +114,8 @@ const BATCH_MEMORY_SIZE: u64 = 128 << 20;
 /// How many texture views to keep before starting over, so views of textures since replaced
 /// do not keep them alive for ever.
 const MAXIMUM_CACHED_VIEWS: usize = 4096;
+/// Texture bind groups kept for reuse; each holds its textures alive, so the cache is bounded.
+const MAXIMUM_CACHED_TEXTURE_GROUPS: usize = 4096;
 /// Render target and copy register fields.
 const COLOR_BASE_MASK: u32 = 0xFFF;
 const COLOR_FORMAT_SHIFT: u32 = 16;
@@ -104,6 +133,10 @@ const STENCIL_MASK: u32 = 0xFF;
 /// RB_STENCILREFMASK: reference, read mask and write mask, a byte each.
 const STENCIL_READ_MASK_SHIFT: u32 = 8;
 const STENCIL_WRITE_MASK_SHIFT: u32 = 16;
+/// PA_SU_SC_MODE_CNTL: strips restart at VGT_MULTI_PRIM_IB_RESET_INDX's index.
+const MULTI_PRIM_IB_ENABLE: u32 = 1 << 21;
+/// The index that restarts a strip on the host, as wgpu takes it with 32-bit indices.
+const HOST_RESTART_INDEX: u32 = u32::MAX;
 /// PA_SU_SC_MODE_CNTL: positions are moved by the window offset.
 const VTX_WINDOW_OFFSET_ENABLE: u32 = 1 << 16;
 /// The resolve source registers for colour targets 0-3.
@@ -188,11 +221,18 @@ impl From<&TextureDescriptor> for TextureKey {
 
 struct CachedTexture {
     texture: wgpu::Texture,
-    /// A hash of the guest bytes it was decoded from.
-    content: u64,
+    /// The guest bytes it was decoded from. Comparing them is several times faster than hashing
+    /// them, which matters at thousands of draws a frame.
+    guest: Vec<u8>,
     /// The frame it was last compared with guest memory.
     checked_frame: u64,
 }
+
+/// A texture bind group's layout, and each texture constant's texture and sampler.
+type TextureGroupKey = (
+    wgpu::BindGroupLayout,
+    Vec<(u32, wgpu::Texture, wgpu::Sampler)>,
+);
 
 /// A translated shader, ready for pipelines.
 struct CompiledShader {
@@ -229,23 +269,41 @@ struct PassTargets {
     depth: Option<RenderTargetKey>,
 }
 
+/// What draws have set in the open render pass, so each draw sets only what changed: wgpu
+/// validates and encodes every call, which at thousands of draws a frame adds up.
+#[derive(Default)]
+struct PassState {
+    pipeline: Option<wgpu::RenderPipeline>,
+    texture_group: Option<wgpu::BindGroup>,
+    scissor: Option<[u32; 4]>,
+    stencil_reference: Option<u32>,
+    blend_constant: Option<[u32; 4]>,
+    index_buffer_set: bool,
+}
+
 /// Draws recorded since the last submission.
 struct Batch {
     encoder: wgpu::CommandEncoder,
     /// The pass the latest draws share, with the surfaces it was begun on.
-    pass: Option<(PassTargets, wgpu::RenderPass<'static>)>,
+    pass: Option<(PassTargets, wgpu::RenderPass<'static>, PassState)>,
     /// Each draw's constants, at the offset its bind group uses, and the guest memory the
     /// draws read; uploaded when the batch is submitted.
     constants: Vec<u8>,
     memory: BatchMemory,
 }
 
-/// Guest memory the batched draws read: each range once, however many draws read it.
+/// Guest memory the batched draws read: each range once, however many draws read it or ranges
+/// inside it. Titles often draw from a vertex buffer through fetch constants that start further
+/// into it each draw and run to its end, so sharing only identical ranges would upload the rest
+/// of the buffer again for every draw.
 #[derive(Default)]
 struct BatchMemory {
     bytes: Vec<u8>,
-    /// Each range placed (its first word and its length in whole words) and where it starts.
-    ranges: HashMap<(u32, u32), u32>,
+    /// Ranges placed since the title last submitted commands, by first word: their length in
+    /// whole words and where they start in `bytes`.
+    placed: BTreeMap<u32, (u32, u32)>,
+    /// The longest range in `placed`, which bounds how far back a range holding another starts.
+    longest_placed: u32,
     /// Indexed draws' guest indices, in host order, for the host's index buffer.
     indices: Vec<u32>,
 }
@@ -269,7 +327,7 @@ impl BatchMemory {
         let added: usize = ranges
             .iter()
             .map(words)
-            .filter(|key| !self.ranges.contains_key(key))
+            .filter(|&(first, length)| self.find(first, length).is_none())
             .map(|(_, length)| length as usize)
             .sum();
         if self.bytes.len() + added > capacity {
@@ -279,12 +337,14 @@ impl BatchMemory {
             .iter()
             .map(|range| {
                 let (first, length) = words(range);
-                let start = *self.ranges.entry((first, length)).or_insert_with(|| {
+                let start = self.find(first, length).unwrap_or_else(|| {
                     let start = self.bytes.len();
                     self.bytes.resize(start + length as usize, 0);
                     if let Some(address) = view(first) {
                         memory.read_bytes(address, &mut self.bytes[start..]);
                     }
+                    self.placed.insert(first, (length, start as u32));
+                    self.longest_placed = self.longest_placed.max(length);
                     start as u32
                 });
                 start + range.0 - first
@@ -292,17 +352,38 @@ impl BatchMemory {
             .collect();
         Some(offsets)
     }
+
+    /// Where `first` is in `bytes`, if a placed range holds all of `first..first + length`.
+    fn find(&self, first: u32, length: u32) -> Option<u32> {
+        let end = u64::from(first) + u64::from(length);
+        self.placed
+            .range(first.saturating_sub(self.longest_placed)..=first)
+            .rev()
+            .find(|&(&base, &(placed_length, _))| u64::from(base) + u64::from(placed_length) >= end)
+            .map(|(&base, &(_, start))| start + (first - base))
+    }
+
+    /// Forgets what was placed, keeping the bytes for the draws already batched, so later draws
+    /// read guest memory afresh.
+    fn forget_placed(&mut self) {
+        self.placed.clear();
+        self.longest_placed = 0;
+    }
 }
 
 impl Batch {
-    /// A batch filling the buffers a submitted batch has given back, if any.
-    fn new(device: &wgpu::Device, spare: Option<(Vec<u8>, BatchMemory)>) -> Self {
-        let (constants, memory) = spare.unwrap_or_default();
+    /// A batch filling the allocations a submitted batch has given back, if any.
+    fn new(device: &wgpu::Device, recycled: Option<Recycled>) -> Self {
+        let (constants, bytes, indices) = recycled.unwrap_or_default();
         Self {
             encoder: device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default()),
             pass: None,
             constants,
-            memory,
+            memory: BatchMemory {
+                bytes,
+                indices,
+                ..BatchMemory::default()
+            },
         }
     }
 }
@@ -317,7 +398,8 @@ struct RenderTargetKey {
 
 pub struct Renderer {
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    /// Uploads, submissions and presentation, in order, on their own thread.
+    submitter: Submitter,
     /// Every batched draw's constants, each at a multiple of `constants_stride`.
     constants: wgpu::Buffer,
     constants_stride: u64,
@@ -326,14 +408,16 @@ pub struct Renderer {
     /// Every batched indexed draw's indices.
     indices: wgpu::Buffer,
     batch: Option<Batch>,
-    /// A submitted batch's buffers, emptied for the next.
-    spare: Option<(Vec<u8>, BatchMemory)>,
     /// Views of whole textures (one aspect of depth textures), kept because making and
     /// destroying them waits for the GPU on some drivers.
     views: HashMap<(wgpu::Texture, wgpu::TextureAspect), wgpu::TextureView>,
     /// The window's texture viewed as plain (not sRGB) bytes.
     display_view: Option<(wgpu::Texture, wgpu::TextureView)>,
     constants_layout: wgpu::BindGroupLayout,
+    /// The constants and guest memory buffers, for every draw.
+    constants_group: wgpu::BindGroup,
+    /// Bind groups for the sets of textures and samplers draws have used.
+    texture_groups: HashMap<TextureGroupKey, wgpu::BindGroup>,
     /// None for shaders that did not translate to valid WGSL.
     shaders: HashMap<(ShaderStage, u64), Option<CompiledShader>>,
     /// Pipelines and the texture bind group layout they were made with; None if creation failed.
@@ -351,8 +435,8 @@ pub struct Renderer {
     /// What has been reported as not reproduced, so each is reported once.
     reported: BTreeSet<String>,
     presented: u64,
-    /// The last presented frame's work, which the next swap waits for.
-    frame_in_flight: Option<wgpu::SubmissionIndex>,
+    /// The resolves being saved this frame, if an input script asked.
+    resolve_dump: Option<ResolveDump>,
     /// Copies a front buffer to the display, created on first use: as stored, and with red
     /// and blue exchanged back.
     blits: HashMap<bool, wgpu::RenderPipeline>,
@@ -372,23 +456,43 @@ pub struct Renderer {
 
 impl Renderer {
     fn new(device: wgpu::Device, queue: wgpu::Queue, software: bool) -> Self {
-        let storage = |binding| wgpu::BindGroupLayoutEntry {
+        let storage = |binding, has_dynamic_offset| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
+                has_dynamic_offset,
                 min_binding_size: None,
             },
             count: None,
         };
         let constants_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("guest constants and memory"),
-            entries: &[storage(0), storage(1)],
+            // Each draw's constants are at their own offset in one buffer, given when the draw
+            // binds the group, so one bind group serves every draw.
+            entries: &[storage(0, true), storage(1, false)],
         });
         let constants_stride = CONSTANTS_SIZE.next_multiple_of(storage_offset_alignment(&device));
         let constants = storage_buffer(&device, constants_stride * BATCH_DRAWS);
         let memory = storage_buffer(&device, BATCH_MEMORY_SIZE);
+        let constants_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("guest constants and memory"),
+            layout: &constants_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &constants,
+                        offset: 0,
+                        size: NonZeroU64::new(CONSTANTS_SIZE),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: memory.as_entire_binding(),
+                },
+            ],
+        });
         let indices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("batched indices"),
             size: BATCH_INDICES * u64::from(WORD_SIZE),
@@ -397,17 +501,18 @@ impl Renderer {
         });
         info!(target: "renderer", "rendering guest draws with wgpu");
         Self {
+            submitter: Submitter::start(device.clone(), queue, FRAME_WAIT_LIMIT),
             device,
-            queue,
             constants,
             constants_stride,
             memory,
             indices,
             batch: None,
-            spare: None,
             views: HashMap::new(),
             display_view: None,
             constants_layout,
+            constants_group,
+            texture_groups: HashMap::new(),
             shaders: HashMap::new(),
             pipelines: HashMap::new(),
             render_targets: HashMap::new(),
@@ -419,7 +524,7 @@ impl Renderer {
             samplers: HashMap::new(),
             reported: BTreeSet::new(),
             presented: 0,
-            frame_in_flight: None,
+            resolve_dump: None,
             blits: HashMap::new(),
             swapped: HashSet::new(),
             resolves: HashMap::new(),
@@ -461,6 +566,15 @@ impl Renderer {
         action(self);
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {
             self.report(format!("{what} failed: {error}"));
+        }
+    }
+
+    /// The title submitted more commands. It wrote what their draws read before submitting
+    /// them, but may since have written over what earlier draws read, so later draws read guest
+    /// memory afresh rather than sharing what earlier ones placed.
+    pub fn commands_submitted(&mut self) {
+        if let Some(batch) = &mut self.batch {
+            batch.memory.forget_placed();
         }
     }
 
@@ -525,15 +639,31 @@ impl Renderer {
             pass.draw(0..FULL_SCREEN_TRIANGLE, 0..1);
         }
         // Keep at most one frame in flight: without waiting, a slow GPU falls ever further
-        // behind the title, and the window's own frames queue up behind the backlog.
-        let submission = self.queue.submit([encoder.finish()]);
-        if let Some(previous) = self.frame_in_flight.replace(submission) {
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: Some(previous),
-                timeout: Some(FRAME_WAIT_LIMIT),
-            });
-        }
+        // behind the title, and the window's own frames queue up behind the backlog. The
+        // title records the next frame while the GPU finishes this one.
         self.presented += 1;
+        let readbacks = self
+            .resolve_dump
+            .take()
+            .map_or_else(Vec::new, |dump| dump.readbacks);
+        self.submitter.send(Work::Present {
+            encoder,
+            frame: self.presented,
+            display,
+            captures: std::mem::take(&mut *CAPTURES.lock().unwrap()),
+            readbacks,
+        });
+        // A dump asked for during this frame covers the next one from its start.
+        self.resolve_dump = RESOLVE_DUMPS
+            .lock()
+            .unwrap()
+            .take()
+            .map(|prefix| ResolveDump {
+                prefix,
+                readbacks: Vec::new(),
+            });
+        self.submitter
+            .wait_for_frame(self.presented - 1, FRAME_WAIT_LIMIT);
         if self.presented == 1 {
             info!(target: "renderer", "first guest frame presented from physical {front_buffer:#010x}");
         }
@@ -677,11 +807,18 @@ impl Renderer {
             .indices
             .filter(|_| entry == VertexEntry::Indexed)
             .map(|indices| {
+                // Strips the title cuts with a reset index restart there on the host too;
+                // drawn through, each cut would join two strips with triangles through
+                // whatever vertex the reset index names.
+                let restart = (topology.is_strip()
+                    && register(registers::PA_SU_SC_MODE_CNTL) & MULTI_PRIM_IB_ENABLE != 0)
+                    .then(|| register(registers::VGT_MULTI_PRIM_IB_RESET_INDX));
                 self.push_indices(
                     memory,
                     indices,
                     draw.initiator.indices_are_32_bit,
                     host_index_count,
+                    restart,
                 )
             });
         let vertex_offsets: Vec<(u32, u32)> =
@@ -731,50 +868,10 @@ impl Renderer {
         }
         let words = constants_words(memory, &draw_words, &swizzles);
         let constants_offset = self.push_constants(words_as_bytes(&words));
-        let constants_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.constants_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.constants,
-                        offset: constants_offset,
-                        size: NonZeroU64::new(CONSTANTS_SIZE),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.memory.as_entire_binding(),
-                },
-            ],
-        });
-        let views: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = texture_entries
-            .into_iter()
-            .map(|(constant, texture, sampler)| {
-                (
-                    constant,
-                    self.view(&texture, wgpu::TextureAspect::All),
-                    sampler,
-                )
-            })
-            .collect();
-        let mut entries = Vec::new();
-        for (constant, view, sampler) in &views {
-            entries.push(wgpu::BindGroupEntry {
-                binding: constant * 2,
-                resource: wgpu::BindingResource::TextureView(view),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: constant * 2 + 1,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            });
-        }
-        let texture_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &texture_layout,
-            entries: &entries,
-        });
+        let constants_offset =
+            u32::try_from(constants_offset).expect("the constants buffer is far below 4 GiB");
+        let constants_group = self.constants_group.clone();
+        let texture_group = self.texture_group(texture_layout, texture_entries);
 
         let targets = PassTargets {
             color: (
@@ -790,30 +887,95 @@ impl Renderer {
             }),
         };
         let index_buffer = self.indices.clone();
-        let pass = self.pass(targets, &target, depth_target.as_ref());
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &constants_group, &[]);
-        pass.set_bind_group(1, &texture_group, &[]);
-        pass.set_scissor_rect(
+        let blend_constant: [u32; 4] =
+            std::array::from_fn(|channel| register(registers::RB_BLEND_RED + channel as u32));
+        let scissor = [
             scissor.left,
             scissor.top,
             scissor.right - scissor.left,
             scissor.bottom - scissor.top,
-        );
-        pass.set_stencil_reference(stencil & STENCIL_MASK);
-        let [r, g, b, a] = std::array::from_fn(|channel| {
-            f64::from(f32::from_bits(register(
-                registers::RB_BLEND_RED + channel as u32,
-            )))
-        });
-        pass.set_blend_constant(wgpu::Color { r, g, b, a });
+        ];
+        let stencil_reference = stencil & STENCIL_MASK;
+        let (pass, state) = self.pass(targets, &target, depth_target.as_ref());
+        if state.pipeline.as_ref() != Some(&pipeline) {
+            pass.set_pipeline(&pipeline);
+            state.pipeline = Some(pipeline);
+        }
+        // The constants' offset changes with every draw.
+        pass.set_bind_group(0, &constants_group, &[constants_offset]);
+        if state.texture_group.as_ref() != Some(&texture_group) {
+            pass.set_bind_group(1, &texture_group, &[]);
+            state.texture_group = Some(texture_group);
+        }
+        if state.scissor != Some(scissor) {
+            let [x, y, width, height] = scissor;
+            pass.set_scissor_rect(x, y, width, height);
+            state.scissor = Some(scissor);
+        }
+        if state.stencil_reference != Some(stencil_reference) {
+            pass.set_stencil_reference(stencil_reference);
+            state.stencil_reference = Some(stencil_reference);
+        }
+        if state.blend_constant != Some(blend_constant) {
+            let [r, g, b, a] = blend_constant.map(|bits| f64::from(f32::from_bits(bits)));
+            pass.set_blend_constant(wgpu::Color { r, g, b, a });
+            state.blend_constant = Some(blend_constant);
+        }
         match first_index {
             Some(first) => {
-                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                if !state.index_buffer_set {
+                    pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    state.index_buffer_set = true;
+                }
                 pass.draw_indexed(first..first + host_vertices, 0, 0..1);
             }
             None => pass.draw(0..host_vertices, 0..1),
         }
+    }
+
+    /// The bind group for these textures and samplers, created the first time they are used
+    /// together.
+    fn texture_group(
+        &mut self,
+        layout: wgpu::BindGroupLayout,
+        textures: Vec<(u32, wgpu::Texture, wgpu::Sampler)>,
+    ) -> wgpu::BindGroup {
+        let key = (layout, textures);
+        if let Some(group) = self.texture_groups.get(&key) {
+            return group.clone();
+        }
+        if self.texture_groups.len() >= MAXIMUM_CACHED_TEXTURE_GROUPS {
+            self.texture_groups.clear();
+        }
+        let views: Vec<wgpu::TextureView> = key
+            .1
+            .iter()
+            .map(|(_, texture, _)| self.view(texture, wgpu::TextureAspect::All))
+            .collect();
+        let entries: Vec<wgpu::BindGroupEntry> = key
+            .1
+            .iter()
+            .zip(&views)
+            .flat_map(|((constant, _, sampler), view)| {
+                [
+                    wgpu::BindGroupEntry {
+                        binding: constant * 2,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: constant * 2 + 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ]
+            })
+            .collect();
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &key.0,
+            entries: &entries,
+        });
+        self.texture_groups.insert(key, group.clone());
+        group
     }
 
     /// Places the guest memory a draw reads in the batch (see `BatchMemory::place`), first
@@ -838,7 +1000,7 @@ impl Renderer {
             return Some(offsets);
         }
         self.submit();
-        let batch = Batch::new(&self.device, self.spare.take());
+        let batch = Batch::new(&self.device, self.submitter.recycled());
         let batch = self.batch.insert(batch);
         batch.memory.place(memory, view, ranges, capacity)
     }
@@ -851,6 +1013,7 @@ impl Renderer {
         indices: IndexBuffer,
         is_32_bit: bool,
         count: usize,
+        restart: Option<u32>,
     ) -> u32 {
         let index_size = if is_32_bit {
             WORD_SIZE as usize
@@ -869,6 +1032,7 @@ impl Renderer {
             count,
             is_32_bit,
             indices.endian,
+            restart,
         ));
         first
     }
@@ -900,12 +1064,12 @@ impl Renderer {
         targets: PassTargets,
         color: &wgpu::Texture,
         depth: Option<&wgpu::Texture>,
-    ) -> &mut wgpu::RenderPass<'static> {
+    ) -> (&mut wgpu::RenderPass<'static>, &mut PassState) {
         let reuse = self
             .batch
             .as_ref()
             .and_then(|batch| batch.pass.as_ref())
-            .is_some_and(|(open, _)| *open == targets);
+            .is_some_and(|(open, _, _)| *open == targets);
         if !reuse {
             let color_view = self.view(color, wgpu::TextureAspect::All);
             let depth_view = depth.map(|texture| self.view(texture, wgpu::TextureAspect::All));
@@ -938,10 +1102,11 @@ impl Renderer {
                     ..Default::default()
                 })
                 .forget_lifetime();
-            batch.pass = Some((targets, pass));
+            batch.pass = Some((targets, pass, PassState::default()));
         }
         let batch = self.batch.as_mut().expect("place_memory opens the batch");
-        &mut batch.pass.as_mut().unwrap().1
+        let (_, pass, state) = batch.pass.as_mut().unwrap();
+        (pass, state)
     }
 
     /// The batch, with no render pass open, to record other passes into.
@@ -949,7 +1114,7 @@ impl Renderer {
         let mut batch = self
             .batch
             .take()
-            .unwrap_or_else(|| Batch::new(&self.device, self.spare.take()));
+            .unwrap_or_else(|| Batch::new(&self.device, self.submitter.recycled()));
         batch.pass = None;
         batch
     }
@@ -966,19 +1131,15 @@ impl Renderer {
             batch.constants.len() as u64 / self.constants_stride,
             batch.memory.bytes.len()
         );
-        self.queue
-            .write_buffer(&self.constants, 0, &batch.constants);
-        self.queue
-            .write_buffer(&self.memory, 0, &batch.memory.bytes);
-        self.queue
-            .write_buffer(&self.indices, 0, words_as_bytes(&batch.memory.indices));
-        self.queue.submit([batch.encoder.finish()]);
-        // The next batch reuses the allocations rather than faulting in fresh ones.
-        batch.constants.clear();
-        batch.memory.bytes.clear();
-        batch.memory.ranges.clear();
-        batch.memory.indices.clear();
-        self.spare = Some((batch.constants, batch.memory));
+        // The allocations come back for a later batch rather than faulting in fresh ones.
+        self.submitter.send(Work::Submit {
+            encoder: batch.encoder,
+            uploads: Uploads {
+                constants: (self.constants.clone(), batch.constants),
+                memory: (self.memory.clone(), batch.memory.bytes),
+                indices: (self.indices.clone(), batch.memory.indices),
+            },
+        });
     }
 
     /// A view of the whole texture, or of one aspect of a depth texture.
@@ -1212,16 +1373,13 @@ impl Renderer {
             return self.placeholder_texture();
         };
         let Some(address) = view(descriptor.base) else {
-            self.report("textures outside allocated memory".into());
+            self.report("textures past the end of physical memory".into());
             return self.placeholder_texture();
         };
         let mut guest = vec![0; size as usize];
         memory.read_bytes(address, &mut guest);
-        let mut hasher = DefaultHasher::new();
-        guest.hash(&mut hasher);
-        let content = hasher.finish();
         if let Some(cached) = self.textures.get_mut(&key)
-            && cached.content == content
+            && cached.guest == guest
         {
             cached.checked_frame = self.presented;
             return cached.texture.clone();
@@ -1254,21 +1412,20 @@ impl Renderer {
                 view_formats: &[],
             }),
         };
-        self.queue.write_texture(
-            texture.as_image_copy(),
-            &decoded.data,
-            wgpu::TexelCopyBufferLayout {
+        self.submitter.send(Work::WriteTexture {
+            texture: texture.clone(),
+            data: decoded.data,
+            layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(descriptor.width * bytes_per_texel),
                 rows_per_image: Some(descriptor.height),
             },
-            texture.size(),
-        );
+        });
         self.textures.insert(
             key,
             CachedTexture {
                 texture: texture.clone(),
-                content,
+                guest,
                 checked_frame: self.presented,
             },
         );
@@ -1326,12 +1483,11 @@ impl Renderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        self.queue.write_texture(
-            texture.as_image_copy(),
-            &[u8::MAX; 4],
-            wgpu::TexelCopyBufferLayout::default(),
-            texture.size(),
-        );
+        self.submitter.send(Work::WriteTexture {
+            texture: texture.clone(),
+            data: vec![u8::MAX; 4],
+            layout: wgpu::TexelCopyBufferLayout::default(),
+        });
         self.placeholder = Some(texture.clone());
         texture
     }
@@ -1659,6 +1815,17 @@ impl Renderer {
             rectangle.bottom - rectangle.top,
         );
         pass.draw(0..FULL_SCREEN_TRIANGLE, 0..1);
+        drop(pass);
+        if let Some(dump) = &mut self.resolve_dump {
+            let mut name = dump.prefix.file_name().unwrap_or_default().to_os_string();
+            name.push(format!(
+                "-{:02}-{destination_address:08x}.png",
+                dump.readbacks.len()
+            ));
+            let path = dump.prefix.with_file_name(name);
+            dump.readbacks
+                .extend(Readback::record(&self.device, encoder, &destination, path));
+        }
     }
 }
 
@@ -2030,7 +2197,16 @@ fn host_indices(
     count: usize,
     is_32_bit: bool,
     endian: u32,
+    restart: Option<u32>,
 ) -> Vec<u32> {
+    // A 16-bit index buffer compares the reset index's low half.
+    let restart = restart.map(|index| {
+        if is_32_bit {
+            index
+        } else {
+            index & u32::from(u16::MAX)
+        }
+    });
     let word = |byte: usize| {
         let first = byte & !(WORD_SIZE as usize - 1);
         guest
@@ -2047,6 +2223,13 @@ fn host_indices(
                 let byte = start + index * size_of::<u16>();
                 (word(byte) >> ((byte & size_of::<u16>()) * u8::BITS as usize))
                     & u32::from(u16::MAX)
+            }
+        })
+        .map(|index| {
+            if Some(index) == restart {
+                HOST_RESTART_INDEX
+            } else {
+                index
             }
         })
         .collect()
@@ -2108,7 +2291,9 @@ fn constants_words(
     const INDEX_BITS_32: u32 = 32;
     let mut words = Vec::with_capacity(CONSTANTS_WORDS);
     for (first, count) in [FLOAT_CONSTANTS, FETCH, BOOLS, LOOPS] {
-        words.extend((0..count as u32).map(|index| read_register(memory, first + index)));
+        let start = words.len();
+        words.resize(start + count, 0);
+        read_registers(memory, first, &mut words[start..]);
     }
     // Shaders find vertex buffers in the batch's guest memory, not at their guest addresses.
     for &(constant, offset) in &draw.vertex_offsets {
@@ -2145,7 +2330,7 @@ fn constants_words(
     words
 }
 
-fn words_as_bytes(words: &[u32]) -> &[u8] {
+pub(crate) fn words_as_bytes(words: &[u32]) -> &[u8] {
     // SAFETY: u32 has no padding and u8 has no alignment requirement.
     unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) }
 }
@@ -2304,7 +2489,26 @@ mod tests {
         const EIGHT_IN_16: u32 = 1;
         // Big-endian 16-bit indices 1, 2, 3 after two bytes of something else.
         let guest = [0xAA, 0xBB, 0x00, 0x01, 0x00, 0x02, 0x00, 0x03];
-        assert_eq!(host_indices(&guest, 2, 3, false, EIGHT_IN_16), [1, 2, 3]);
+        assert_eq!(
+            host_indices(&guest, 2, 3, false, EIGHT_IN_16, None),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn a_strips_reset_index_becomes_the_hosts_restart_index() {
+        const EIGHT_IN_16: u32 = 1;
+        const RESET_INDEX: u32 = 0xFFFF;
+        // Big-endian 16-bit indices 1, 0xFFFF, 3.
+        let guest = [0x00, 0x01, 0xFF, 0xFF, 0x00, 0x03, 0x00, 0x00];
+        assert_eq!(
+            host_indices(&guest, 0, 3, false, EIGHT_IN_16, Some(RESET_INDEX)),
+            [1, HOST_RESTART_INDEX, 3]
+        );
+        assert_eq!(
+            host_indices(&guest, 0, 3, false, EIGHT_IN_16, None),
+            [1, RESET_INDEX, 3]
+        );
     }
 
     #[test]
@@ -2343,6 +2547,28 @@ mod tests {
         assert_eq!(first, [0, 10]);
         assert_eq!(second, [0]);
         assert_eq!(batch.bytes.len(), 12);
+    }
+
+    #[test]
+    fn ranges_inside_a_placed_range_share_it_until_commands_are_submitted() {
+        const BUFFER: u32 = 0x2000;
+        const BUFFER_SIZE: u32 = 0x100;
+        const STEP: u32 = 0x40;
+        const CAPACITY: usize = 0x1000;
+        let memory = GuestMemory::reserve().unwrap();
+        let identity = |physical| Some(physical);
+        let mut batch = BatchMemory::default();
+        let place = |batch: &mut BatchMemory, offset: u32| {
+            let range = (BUFFER + offset, BUFFER_SIZE - offset);
+            batch.place(&memory, &identity, &[range], CAPACITY).unwrap()[0]
+        };
+        assert_eq!(place(&mut batch, 0), 0);
+        assert_eq!(place(&mut batch, STEP), STEP);
+        assert_eq!(place(&mut batch, 2 * STEP + 2), 2 * STEP + 2);
+        assert_eq!(batch.bytes.len(), BUFFER_SIZE as usize);
+        batch.forget_placed();
+        assert_eq!(place(&mut batch, STEP), BUFFER_SIZE);
+        assert_eq!(batch.bytes.len(), (2 * BUFFER_SIZE - STEP) as usize);
     }
 
     #[test]

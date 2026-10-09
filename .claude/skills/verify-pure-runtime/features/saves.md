@@ -19,7 +19,7 @@ Preconditions:
 
 - `scripts/doctor.sh` prints `ready`; `xdotool` is installed. Always set `PURE_DATA_DIR` to a fresh directory under `local/verification/`, so runs never touch real saves.
 
-- **Create and write.** `export PURE_DATA_DIR=$PWD/local/verification/saves-$(date +%s); mkdir -p $PURE_DATA_DIR`, then drive a 70-second run with `RUST_LOG=info,file=debug` and press, 3 s apart after the window appears: Return ×4, Down, Return ×2, Escape, Return ×3 (see [input.md](./input.md) for sending keys). `runtime.log` shows `0 packages`, the `mode 1 -> Ok(1)` create line, a `file: write "save:\\puresave.dat"` line and `save: closed -> 0`; `find $PURE_DATA_DIR -type f` lists `PureSave.display_name` and `PureSave/puresave.dat`.
+- **Create and write.** `export PURE_DATA_DIR=$PWD/local/verification/saves-$(date +%s); mkdir -p $PURE_DATA_DIR`, then drive a 70-second run with `VERIFY_RUST_LOG=info,file=debug` and press, 3 s apart after the window appears: Return ×4, Down, Return ×2, Escape, Return ×3 (see [input.md](./input.md) for sending keys). `runtime.log` shows `0 packages`, the `mode 1 -> Ok(1)` create line, a `file: write "save:\\puresave.dat"` line and `save: closed -> 0`; `find $PURE_DATA_DIR -type f` lists `PureSave.display_name` and `PureSave/puresave.dat`.
 - **Load.** Repeat with the same `PURE_DATA_DIR`. The log shows `1 packages`, `mode 3 -> Ok(2)` and a read of the whole file.
 
 ## Gotchas

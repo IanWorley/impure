@@ -1,8 +1,11 @@
 # Original game files and local analysis artifacts.
-/originals/
-/local/
+# No trailing slash, so a symlink to a directory elsewhere is ignored too.
+/originals
+/local
 /build/
 /runtime/target/
+# Release archives from tools/package-release.sh.
+/dist/
 __pycache__/
 
 # Game files are never committed, wherever they end up.
@@ -15,3 +18,5 @@ __pycache__/
 *.xwb
 *.xsb
 *.xgs
+# The game library the runtime builds, if one is ever copied here.
+pure_game.*

@@ -18,13 +18,6 @@ const REPORTED_SIGNALS: [libc::c_int; 2] = [libc::SIGSEGV, libc::SIGBUS];
 /// The lookup table holds an 8-byte host function pointer per 4-byte guest instruction.
 const LOOKUP_BYTES_PER_GUEST_BYTE: usize = 2;
 
-unsafe extern "C" {
-    // The lookup table's layout, from cpp/glue.cpp.
-    static pure_lookup_table_offset: u64;
-    static pure_code_base: u32;
-    static pure_code_size: u32;
-}
-
 /// Installs the handler; `guest_base` lets it translate faulting addresses.
 pub fn install(guest_base: *mut u8) {
     GUEST_BASE.store(guest_base as usize, Ordering::Relaxed);
@@ -74,9 +67,8 @@ fn symbolize(address: usize) -> String {
 /// lands outside the table: generated code reads the host function for `target` at
 /// `table + (target - code base) * 2`, with 32-bit wrapping of the subtraction.
 fn indirect_call_target(address: usize, base: usize) -> Option<u32> {
-    // SAFETY: constants defined in cpp/glue.cpp and never written.
-    let (table_offset, code_base, code_size) =
-        unsafe { (pure_lookup_table_offset, pure_code_base, pure_code_size) };
+    let table = crate::game_module::try_get()?.lookup_table;
+    let (table_offset, code_base, code_size) = (table.offset, table.code_base, table.code_size);
     let offset = address.checked_sub(base + table_offset as usize)?;
     let table_size = code_size as usize * LOOKUP_BYTES_PER_GUEST_BYTE;
     let reach = GUEST_ADDRESS_SPACE_SIZE * LOOKUP_BYTES_PER_GUEST_BYTE;
