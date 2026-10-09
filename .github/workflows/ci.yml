@@ -51,19 +51,11 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
 
-  runtime:
-    name: Runtime (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: Linux x86-64, os: ubuntu-24.04 }
-          - { name: Linux arm64, os: ubuntu-24.04-arm }
-          - { name: macOS x86-64, os: macos-15-intel }
-          - { name: macOS arm64, os: macos-15 }
-          - { name: Windows x86-64, os: windows-2025 }
-          - { name: Windows arm64, os: windows-11-arm }
-    runs-on: ${{ matrix.os }}
+  # Tests on one Linux runner only; the six platforms are built when a release is tagged
+  # (build-release.yml), so pushes and pull requests stay cheap.
+  test:
+    name: Runtime tests
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: runtime
@@ -73,5 +65,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: runtime
-      - run: cargo build --locked
       - run: cargo test --locked
