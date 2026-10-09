@@ -163,7 +163,7 @@ Each import is a typed handler in `runtime/src/kernel/`, grouped by subsystem: m
 
 An import the runtime does not implement is logged with its arguments and caller, and stops the calling guest thread. `--exit-on-stop` closes the app when a guest thread stops, for scripted runs. On Linux and macOS a host crash (segmentation fault or bus error) is reported in the log before the process exits, with the faulting address and a backtrace naming the generated guest functions.
 
-Every build of the runtime is game-free, so CI builds the whole runtime: `.github/workflows/ci.yml` builds and tests it natively on the six targets, lints it and its workflows, and runs `tools/check-no-game-content.sh`. Builds and cross-target checks therefore work without the game:
+Every build of the runtime is game-free, so CI needs no game: on every push and pull request `.github/workflows/ci.yml` runs its tests on Linux x86-64 (the six platforms are built only when a release is tagged), lints it and its workflows, and runs `tools/check-no-game-content.sh`. Builds and cross-target checks therefore work without the game:
 
 ```sh
 rustup target add aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc aarch64-pc-windows-msvc
