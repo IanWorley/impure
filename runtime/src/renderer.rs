@@ -36,7 +36,7 @@ use crate::physical_memory;
 use crate::shader::{Instruction, Program};
 use crate::submitter::{Readback, Recycled, Submitter, Uploads, Work};
 use crate::texture::{self, HostFormat};
-use crate::translate::{self, VertexEntry};
+use crate::translate::{self, TextureDimension, VertexEntry};
 
 /// The renderer, once Bevy's device is available.
 static RENDERER: Mutex<Option<Renderer>> = Mutex::new(None);
@@ -97,11 +97,25 @@ const LOOPS: (u32, usize) = (0x4908, 32);
 const TEXTURE_CONSTANTS: usize = 32;
 /// The per-draw words after the register blocks (`index_offset` to `position_offset_z`).
 const DRAW_WORDS: usize = 11;
-const CONSTANTS_WORDS: usize =
-    FLOAT_CONSTANTS.1 + FETCH.1 + BOOLS.1 + LOOPS.1 + DRAW_WORDS + TEXTURE_CONSTANTS;
+/// The alpha test's words after the texture swizzles (`alpha_function` to `sample_shift`).
+const ALPHA_TEST_WORDS: usize = 4;
+/// Then the register the pixel parameters go to (`pixel_parameters`).
+const PIXEL_PARAMETERS_WORDS: usize = 1;
+const CONSTANTS_WORDS: usize = FLOAT_CONSTANTS.1
+    + FETCH.1
+    + BOOLS.1
+    + LOOPS.1
+    + DRAW_WORDS
+    + TEXTURE_CONSTANTS
+    + ALPHA_TEST_WORDS
+    + PIXEL_PARAMETERS_WORDS;
 /// WGSL rounds the struct's size up to its 16-byte alignment.
 const CONSTANTS_SIZE: u64 = (CONSTANTS_WORDS * 4).next_multiple_of(16) as u64;
 const WORD_SIZE: u32 = 4;
+/// A cube texture's faces, which it stores as array layers.
+const CUBE_FACES: u32 = 6;
+/// xenos::TextureFormat k_8_8_8_8.
+const TEXTURE_FORMAT_8_8_8_8: u32 = 6;
 /// How long a swap waits for the previous frame's GPU work before going on regardless.
 const FRAME_WAIT_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -137,6 +151,11 @@ const STENCIL_WRITE_MASK_SHIFT: u32 = 16;
 const MULTI_PRIM_IB_ENABLE: u32 = 1 << 21;
 /// The index that restarts a strip on the host, as wgpu takes it with 32-bit indices.
 const HOST_RESTART_INDEX: u32 = u32::MAX;
+/// PA_SU_SC_MODE_CNTL: culling of front and back faces, and clockwise (rather than
+/// counter-clockwise) triangles being the front.
+const CULL_FRONT: u32 = 1 << 0;
+const CULL_BACK: u32 = 1 << 1;
+const FRONT_FACE_CLOCKWISE: u32 = 1 << 2;
 /// PA_SU_SC_MODE_CNTL: positions are moved by the window offset.
 const VTX_WINDOW_OFFSET_ENABLE: u32 = 1 << 16;
 /// The resolve source registers for colour targets 0-3.
@@ -197,6 +216,8 @@ const QUAD_LIST: u32 = 0x0D;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct TextureKey {
     base: u32,
+    /// 1, or 6 for a cube.
+    faces: u32,
     format: u32,
     width: u32,
     height: u32,
@@ -205,10 +226,11 @@ struct TextureKey {
     endian: u32,
 }
 
-impl From<&TextureDescriptor> for TextureKey {
-    fn from(descriptor: &TextureDescriptor) -> Self {
+impl TextureKey {
+    fn new(descriptor: &TextureDescriptor, faces: u32) -> Self {
         Self {
             base: descriptor.base,
+            faces,
             format: descriptor.format,
             width: descriptor.width,
             height: descriptor.height,
@@ -237,7 +259,7 @@ type TextureGroupKey = (
 /// A translated shader, ready for pipelines.
 struct CompiledShader {
     module: wgpu::ShaderModule,
-    textures: BTreeSet<u32>,
+    textures: BTreeMap<u32, TextureDimension>,
     vertex_fetch_constants: BTreeSet<u32>,
 }
 
@@ -250,6 +272,8 @@ struct PipelineKey {
     blend_control: u32,
     color_format: wgpu::TextureFormat,
     color_mask: u32,
+    /// Which faces are culled, if any, and which winding faces the front.
+    cull: Option<(wgpu::Face, wgpu::FrontFace)>,
     /// Depth and stencil testing, if the draw does any.
     depth: Option<DepthState>,
 }
@@ -430,7 +454,20 @@ pub struct Renderer {
     /// and format.
     resolved_parts: HashMap<(u32, u32, u32, wgpu::TextureFormat), wgpu::Texture>,
     textures: HashMap<TextureKey, CachedTexture>,
-    placeholder: Option<wgpu::Texture>,
+    /// Opaque white textures, by their number of faces.
+    placeholders: HashMap<u32, wgpu::Texture>,
+    /// Resolved textures holding depth, and whether it was 20e4 floats.
+    depth_resolves: HashMap<wgpu::Texture, bool>,
+    /// Each depth resolve as the console's memory holds it, for draws reading it as 8888.
+    packed_depths: HashMap<wgpu::Texture, wgpu::Texture>,
+    /// The passes moving depth between its host form and EDRAM's, by kind and float format.
+    depth_aliasing: HashMap<(DepthAliasing, bool), wgpu::RenderPipeline>,
+    /// EDRAM ranges a depth surface uses where colour has been drawn since, which the next
+    /// draw testing depth there reads as depth.
+    color_over_depth: HashSet<RenderTargetKey>,
+    /// EDRAM ranges a colour surface uses where depth has been written since (and whether as
+    /// 20e4 floats), which the next colour draw or resolve there reads as colour.
+    depth_over_color: HashMap<RenderTargetKey, bool>,
     samplers: HashMap<(u32, u32, u32, u32), wgpu::Sampler>,
     /// What has been reported as not reproduced, so each is reported once.
     reported: BTreeSet<String>,
@@ -520,7 +557,12 @@ impl Renderer {
             resolved: HashMap::new(),
             resolved_parts: HashMap::new(),
             textures: HashMap::new(),
-            placeholder: None,
+            placeholders: HashMap::new(),
+            depth_resolves: HashMap::new(),
+            packed_depths: HashMap::new(),
+            depth_aliasing: HashMap::new(),
+            color_over_depth: HashSet::new(),
+            depth_over_color: HashMap::new(),
             samplers: HashMap::new(),
             reported: BTreeSet::new(),
             presented: 0,
@@ -697,6 +739,11 @@ impl Renderer {
         } else {
             entry
         };
+        let cull = match culling(register(registers::PA_SU_SC_MODE_CNTL), entry, topology) {
+            Culling::Nothing => None,
+            Culling::Faces(face, front_face) => Some((face, front_face)),
+            Culling::Everything => return,
+        };
         if surface.pitch == 0 || host_vertices == 0 {
             return;
         }
@@ -756,20 +803,22 @@ impl Renderer {
             } else {
                 register(registers::RB_COLOR_MASK) & COLOR_MASK_TARGET_0
             },
+            cull,
             depth,
         };
-        let textures: BTreeSet<u32> = self.shaders[&(ShaderStage::Vertex, vertex)]
+        let mut textures = self.shaders[&(ShaderStage::Vertex, vertex)]
             .as_ref()
             .unwrap()
             .textures
-            .union(
-                &self.shaders[&(ShaderStage::Pixel, pixel)]
-                    .as_ref()
-                    .unwrap()
-                    .textures,
-            )
-            .copied()
-            .collect();
+            .clone();
+        for (&constant, &dimension) in &self.shaders[&(ShaderStage::Pixel, pixel)]
+            .as_ref()
+            .unwrap()
+            .textures
+        {
+            textures.entry(constant).or_insert(dimension);
+        }
+        let writes_color = pipeline_key.color_mask != 0;
         let Some((pipeline, texture_layout)) = self.pipeline(pipeline_key, &textures) else {
             return;
         };
@@ -848,19 +897,61 @@ impl Renderer {
             vertex_offsets,
             indices,
             index_bias: register(registers::VGT_INDX_OFFSET),
-            position_format: (register(registers::PA_CL_VTE_CNTL) >> VTE_FORMAT_SHIFT)
-                & VTE_FORMAT_MASK,
+            position_format: position_format(
+                register(registers::PA_CL_VTE_CNTL),
+                register(registers::PA_CL_CLIP_CNTL),
+            ),
             scale,
             offset,
             indices_are_32_bit: draw.initiator.indices_are_32_bit,
+            alpha_test: alpha_test_words(
+                register(registers::RB_COLORCONTROL),
+                register(registers::RB_ALPHA_REF),
+                surface.sample_shift,
+            ),
+            pixel_parameters: pixel_parameters_register(
+                register(registers::SQ_PROGRAM_CNTL),
+                register(registers::SQ_CONTEXT_MISC),
+            ),
         };
+        if self.resolve_dump.is_some() {
+            info!(target: "dump", "draw: shaders {:016x}/{:016x}, target {:#010x} format {format} {}x{}, blend {:#x}, colorcontrol {:#x} ref {}, depth {:#x}, mode {:#x}, primitive {:#x}, {} vertices",
+                vertex_shader.hash, pixel_shader.hash, color_info & COLOR_BASE_MASK, size.0, size.1,
+                register(registers::RB_BLENDCONTROL0), register(registers::RB_COLORCONTROL),
+                f32::from_bits(register(registers::RB_ALPHA_REF)), register(registers::RB_DEPTHCONTROL),
+                register(registers::PA_SU_SC_MODE_CNTL), draw.initiator.primitive, host_vertices);
+            info!(target: "dump", "  program control {:#010x}, context misc {:#010x}, color mask {:#x}, vte {:#x}, scissor {scissor:?}, window offset {window_offset:?}, surface {:#010x}, depth info {:#010x}",
+                register(registers::SQ_PROGRAM_CNTL), register(registers::SQ_CONTEXT_MISC),
+                register(registers::RB_COLOR_MASK), register(registers::PA_CL_VTE_CNTL),
+                register(registers::RB_SURFACE_INFO), register(registers::RB_DEPTH_INFO));
+            // Full-screen passes are where post-processing goes wrong: their pixel constants.
+            const FULL_SCREEN_VERTICES: u32 = 6;
+            const CONSTANTS_PER_STAGE: u32 = 256;
+            const COMPONENTS: u32 = 4;
+            const PIXEL_CONSTANTS: u32 = FLOAT_CONSTANTS.0 + CONSTANTS_PER_STAGE * COMPONENTS;
+            if host_vertices <= FULL_SCREEN_VERTICES {
+                for index in 0..CONSTANTS_PER_STAGE {
+                    let value: [f32; 4] = std::array::from_fn(|component| {
+                        f32::from_bits(register(
+                            PIXEL_CONSTANTS + index * COMPONENTS + component as u32,
+                        ))
+                    });
+                    if value != [0.0; 4] {
+                        info!(target: "dump", "  c{index}: {value:?}");
+                    }
+                }
+            }
+        }
         let mut swizzles = [0; TEXTURE_CONSTANTS];
         let mut texture_entries = Vec::new();
-        for &constant in &textures {
+        for (&constant, &dimension) in &textures {
             let first = FETCH_CONSTANTS + constant * FETCH_CONSTANT_WORDS;
             let words = std::array::from_fn(|word| register(first + word as u32));
             let descriptor = TextureDescriptor::decode(words);
-            let texture = self.upload_texture(memory, view, &descriptor);
+            if self.resolve_dump.is_some() {
+                info!(target: "dump", "  texture {constant}: {descriptor:?}, words {words:08x?}");
+            }
+            let texture = self.upload_texture(memory, view, &descriptor, dimension);
             swizzles[constant as usize] =
                 texture::host_swizzle(descriptor.swizzle, texture.format().components());
             let sampler = self.sampler(&descriptor);
@@ -896,6 +987,22 @@ impl Renderer {
             scissor.bottom - scissor.top,
         ];
         let stencil_reference = stencil & STENCIL_MASK;
+        let float_depth = edram::depth_is_float(register(registers::RB_DEPTH_INFO));
+        if writes_color {
+            self.transfer_depth_to_color(&targets.color.0);
+        }
+        if let (Some(key), Some(depth_texture)) = (&targets.depth, &depth_target) {
+            self.transfer_color_to_depth(key, depth_texture, float_depth);
+        }
+        if writes_color && self.depth_targets.contains_key(&targets.color.0) {
+            self.color_over_depth.insert(targets.color.0);
+            self.depth_over_color.remove(&targets.color.0);
+        }
+        if let Some(key) = targets.depth
+            && depth.is_some_and(|state| writes_depth_or_stencil(state.control))
+        {
+            self.mark_depth_over_color(key, float_depth);
+        }
         let (pass, state) = self.pass(targets, &target, depth_target.as_ref());
         if state.pipeline.as_ref() != Some(&pipeline) {
             pass.set_pipeline(&pipeline);
@@ -1152,6 +1259,9 @@ impl Renderer {
             .or_insert_with(|| {
                 texture.create_view(&wgpu::TextureViewDescriptor {
                     aspect,
+                    // The only six-layer textures are cubes.
+                    dimension: (texture.depth_or_array_layers() == CUBE_FACES)
+                        .then_some(wgpu::TextureViewDimension::Cube),
                     ..Default::default()
                 })
             })
@@ -1229,7 +1339,7 @@ impl Renderer {
     fn pipeline(
         &mut self,
         key: PipelineKey,
-        textures: &BTreeSet<u32>,
+        textures: &BTreeMap<u32, TextureDimension>,
     ) -> Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)> {
         if let Some(pipeline) = self.pipelines.get(&key) {
             return pipeline.clone();
@@ -1251,13 +1361,16 @@ impl Renderer {
             blend = None;
         }
         let mut entries = Vec::new();
-        for &constant in textures {
+        for (&constant, &dimension) in textures {
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: constant * 2,
                 visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: match dimension {
+                        TextureDimension::TwoD => wgpu::TextureViewDimension::D2,
+                        TextureDimension::Cube => wgpu::TextureViewDimension::Cube,
+                    },
                     multisampled: false,
                 },
                 count: None,
@@ -1319,6 +1432,10 @@ impl Renderer {
                     strip_index_format: (key.entry == VertexEntry::Indexed
                         && key.topology.is_strip())
                     .then_some(wgpu::IndexFormat::Uint32),
+                    front_face: key
+                        .cull
+                        .map_or(wgpu::FrontFace::Ccw, |(_, front_face)| front_face),
+                    cull_mode: key.cull.map(|(face, _)| face),
                     ..Default::default()
                 },
                 depth_stencil: key.depth.map(depth_stencil_state),
@@ -1343,17 +1460,32 @@ impl Renderer {
         result
     }
 
-    /// A texture's base level as it is in guest memory now. Each texture is read at most once
-    /// a frame, and decoded and uploaded again only when its bytes have changed.
+    /// A texture's base level as it is in guest memory now (each of a cube's faces, one after
+    /// another at 4 KiB boundaries). Each texture is read at most once a frame, and decoded and
+    /// uploaded again only when its bytes have changed.
     fn upload_texture(
         &mut self,
         memory: &GuestMemory,
         view: View,
         descriptor: &TextureDescriptor,
+        dimension: TextureDimension,
     ) -> wgpu::Texture {
+        const FACE_ALIGNMENT: u32 = 4096;
+        let faces = match dimension {
+            TextureDimension::TwoD => 1,
+            TextureDimension::Cube => CUBE_FACES,
+        };
         // Render to texture: what a resolve wrote exists only on the host. Titles also sample
         // the top-left part of a destination (a luminance reduction halving its rectangle).
-        if let Some(resolved) = self.resolved.get(&descriptor.base).cloned() {
+        if faces == 1
+            && let Some(mut resolved) = self.resolved.get(&descriptor.base).cloned()
+        {
+            // Read as 8888, a depth resolve is the raw words EDRAM held.
+            if let Some(&float_depth) = self.depth_resolves.get(&resolved)
+                && descriptor.format == TEXTURE_FORMAT_8_8_8_8
+            {
+                resolved = self.packed_depth(&resolved, float_depth);
+            }
             let (width, height) = (descriptor.width, descriptor.height);
             if (resolved.width(), resolved.height()) == (width, height) {
                 return resolved;
@@ -1362,21 +1494,22 @@ impl Renderer {
                 return self.resolved_part(&resolved, descriptor.base, width, height);
             }
         }
-        let key = TextureKey::from(descriptor);
+        let key = TextureKey::new(descriptor, faces);
         if let Some(cached) = self.textures.get(&key)
             && cached.checked_frame == self.presented
         {
             return cached.texture.clone();
         }
-        let Some(size) = texture::guest_size(descriptor) else {
+        let Some(face_size) = texture::guest_size(descriptor) else {
             self.report(format!("texture format {}", descriptor.format));
-            return self.placeholder_texture();
+            return self.placeholder_texture(faces);
         };
+        let face_stride = face_size.next_multiple_of(FACE_ALIGNMENT);
         let Some(address) = view(descriptor.base) else {
             self.report("textures past the end of physical memory".into());
-            return self.placeholder_texture();
+            return self.placeholder_texture(faces);
         };
-        let mut guest = vec![0; size as usize];
+        let mut guest = vec![0; (face_stride * (faces - 1) + face_size) as usize];
         memory.read_bytes(address, &mut guest);
         if let Some(cached) = self.textures.get_mut(&key)
             && cached.guest == guest
@@ -1384,11 +1517,22 @@ impl Renderer {
             cached.checked_frame = self.presented;
             return cached.texture.clone();
         }
-        let Some(decoded) = texture::decode(descriptor, &guest) else {
+        let decoded: Option<Vec<_>> = (0..faces)
+            .map(|face| {
+                let start = (face * face_stride) as usize;
+                texture::decode(descriptor, &guest[start..start + face_size as usize])
+            })
+            .collect();
+        let Some(decoded) = decoded else {
             self.report(format!("texture format {}", descriptor.format));
-            return self.placeholder_texture();
+            return self.placeholder_texture(faces);
         };
-        let (format, bytes_per_texel) = match decoded.format {
+        let data = decoded
+            .iter()
+            .flat_map(|face| &face.data)
+            .copied()
+            .collect();
+        let (format, bytes_per_texel) = match decoded[0].format {
             HostFormat::R8 => (wgpu::TextureFormat::R8Unorm, 1),
             HostFormat::Rg8 => (wgpu::TextureFormat::Rg8Unorm, 2),
             HostFormat::Rgba8 => (wgpu::TextureFormat::Rgba8Unorm, 4),
@@ -1402,7 +1546,7 @@ impl Renderer {
                 size: wgpu::Extent3d {
                     width: descriptor.width,
                     height: descriptor.height,
-                    depth_or_array_layers: 1,
+                    depth_or_array_layers: faces,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -1414,7 +1558,7 @@ impl Renderer {
         };
         self.submitter.send(Work::WriteTexture {
             texture: texture.clone(),
-            data: decoded.data,
+            data,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(descriptor.width * bytes_per_texel),
@@ -1432,7 +1576,6 @@ impl Renderer {
         texture
     }
 
-    /// Opaque white, for textures that cannot be uploaded.
     /// The top-left `width` by `height` of a resolve destination, copied out after the passes
     /// recorded so far.
     fn resolved_part(
@@ -1465,8 +1608,177 @@ impl Renderer {
         part
     }
 
-    fn placeholder_texture(&mut self) -> wgpu::Texture {
-        if let Some(texture) = &self.placeholder {
+    /// A depth resolve as the console's memory holds it: each pixel's EDRAM word, 24 bits of
+    /// depth above 8 of stencil (kept as zero), as an 8888 texture. Titles read it this way to
+    /// copy depth back into EDRAM through a colour surface (see `transfer_color_to_depth`).
+    fn packed_depth(&mut self, resolved: &wgpu::Texture, float_depth: bool) -> wgpu::Texture {
+        let device = &self.device;
+        let packed = self
+            .packed_depths
+            .entry(resolved.clone())
+            .or_insert_with(|| {
+                surface_texture(
+                    device,
+                    (resolved.width(), resolved.height()),
+                    wgpu::TextureFormat::Rgba8Unorm,
+                    wgpu::TextureUsages::TEXTURE_BINDING,
+                )
+            })
+            .clone();
+        let source = self.view(resolved, wgpu::TextureAspect::All);
+        let target = self.view(&packed, wgpu::TextureAspect::All);
+        let pipeline = self.depth_aliasing_pipeline(DepthAliasing::Pack, float_depth);
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source),
+            }],
+        });
+        let mut batch = self.take_batch();
+        let mut pass = batch
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("pack depth"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: LOAD_AND_STORE_COLOR,
+                })],
+                ..Default::default()
+            });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..FULL_SCREEN_TRIANGLE, 0..1);
+        drop(pass);
+        self.batch = Some(batch);
+        packed
+    }
+
+    /// EDRAM is plain memory, so colour drawn where a depth surface lies is that surface's
+    /// depth: titles restore depth by drawing a packed depth resolve as colour there. The host
+    /// keeps the two apart, so before a draw tests depth, colour drawn over it since becomes
+    /// its depth (stencil is left as it was; the host cannot write it from a shader).
+    fn transfer_color_to_depth(
+        &mut self,
+        key: &RenderTargetKey,
+        depth: &wgpu::Texture,
+        float_depth: bool,
+    ) {
+        if !self.color_over_depth.remove(key) {
+            return;
+        }
+        let Some(color) = self
+            .render_targets
+            .get(&(*key, wgpu::TextureFormat::Rgba8Unorm))
+            .cloned()
+        else {
+            return;
+        };
+        let source = self.view(&color, wgpu::TextureAspect::All);
+        let target = self.view(depth, wgpu::TextureAspect::All);
+        let pipeline = self.depth_aliasing_pipeline(DepthAliasing::Unpack, float_depth);
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source),
+            }],
+        });
+        let mut batch = self.take_batch();
+        let mut pass = batch
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("colour to depth"),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &target,
+                    depth_ops: Some(LOAD_AND_STORE),
+                    stencil_ops: Some(LOAD_AND_STORE_STENCIL),
+                }),
+                ..Default::default()
+            });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..FULL_SCREEN_TRIANGLE, 0..1);
+        drop(pass);
+        self.batch = Some(batch);
+    }
+
+    /// Depth written where a colour surface lies is that surface's colour on the console;
+    /// titles clear both at once by clearing depth.
+    fn mark_depth_over_color(&mut self, key: RenderTargetKey, float_depth: bool) {
+        if self
+            .render_targets
+            .contains_key(&(key, wgpu::TextureFormat::Rgba8Unorm))
+        {
+            self.depth_over_color.insert(key, float_depth);
+        }
+    }
+
+    /// The other way round from `transfer_color_to_depth`: before colour is drawn or resolved
+    /// where depth has been written since, that colour becomes the depth surface's EDRAM words.
+    fn transfer_depth_to_color(&mut self, key: &RenderTargetKey) {
+        let Some(float_depth) = self.depth_over_color.remove(key) else {
+            return;
+        };
+        let (Some(depth), Some(color)) = (
+            self.depth_targets.get(key).cloned(),
+            self.render_targets
+                .get(&(*key, wgpu::TextureFormat::Rgba8Unorm))
+                .cloned(),
+        ) else {
+            return;
+        };
+        let source = self.view(&depth, wgpu::TextureAspect::DepthOnly);
+        let target = self.view(&color, wgpu::TextureAspect::All);
+        let pipeline = self.depth_aliasing_pipeline(DepthAliasing::Repack, float_depth);
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&source),
+            }],
+        });
+        let mut batch = self.take_batch();
+        let mut pass = batch
+            .encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth to colour"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: LOAD_AND_STORE_COLOR,
+                })],
+                ..Default::default()
+            });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..FULL_SCREEN_TRIANGLE, 0..1);
+        drop(pass);
+        self.batch = Some(batch);
+    }
+
+    fn depth_aliasing_pipeline(
+        &mut self,
+        kind: DepthAliasing,
+        float_depth: bool,
+    ) -> wgpu::RenderPipeline {
+        let device = &self.device;
+        self.depth_aliasing
+            .entry((kind, float_depth))
+            .or_insert_with(|| create_depth_aliasing(device, kind, float_depth))
+            .clone()
+    }
+
+    /// Opaque white, one texel per face, for textures that cannot be uploaded.
+    fn placeholder_texture(&mut self, faces: u32) -> wgpu::Texture {
+        const TEXEL_BYTES: u32 = 4;
+        if let Some(texture) = self.placeholders.get(&faces) {
             return texture.clone();
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1474,7 +1786,7 @@ impl Renderer {
             size: wgpu::Extent3d {
                 width: 1,
                 height: 1,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: faces,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -1485,10 +1797,14 @@ impl Renderer {
         });
         self.submitter.send(Work::WriteTexture {
             texture: texture.clone(),
-            data: vec![u8::MAX; 4],
-            layout: wgpu::TexelCopyBufferLayout::default(),
+            data: vec![u8::MAX; (TEXEL_BYTES * faces) as usize],
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(TEXEL_BYTES),
+                rows_per_image: Some(1),
+            },
         });
-        self.placeholder = Some(texture.clone());
+        self.placeholders.insert(faces, texture.clone());
         texture
     }
 
@@ -1543,9 +1859,15 @@ impl Renderer {
                 surface.pitch,
             )
         });
+        let source = control & COPY_SOURCE_MASK;
+        if let Some(&info_register) = COLOR_INFO_REGISTERS.get(source as usize) {
+            self.transfer_depth_to_color(&RenderTargetKey {
+                base: register(info_register) & COLOR_BASE_MASK,
+                width: size.0,
+            });
+        }
         let mut batch = self.take_batch();
         let encoder = &mut batch.encoder;
-        let source = control & COPY_SOURCE_MASK;
         match (COLOR_INFO_REGISTERS.get(source as usize), rectangle) {
             (Some(&info_register), Some(rectangle)) => {
                 let info = register(info_register);
@@ -1600,15 +1922,18 @@ impl Renderer {
                 ..Default::default()
             });
         }
+        let depth_key = RenderTargetKey {
+            base: register(registers::RB_DEPTH_INFO) & COLOR_BASE_MASK,
+            width: size.0,
+        };
         if control & COPY_DEPTH_CLEAR != 0
-            && let Some(target) = self
-                .depth_targets
-                .get(&RenderTargetKey {
-                    base: register(registers::RB_DEPTH_INFO) & COLOR_BASE_MASK,
-                    width: size.0,
-                })
-                .cloned()
+            && let Some(target) = self.depth_targets.get(&depth_key).cloned()
         {
+            self.color_over_depth.remove(&depth_key);
+            self.mark_depth_over_color(
+                depth_key,
+                edram::depth_is_float(register(registers::RB_DEPTH_INFO)),
+            );
             let clear = register(registers::RB_DEPTH_CLEAR);
             let view = self.view(&target, wgpu::TextureAspect::All);
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1657,7 +1982,11 @@ impl Renderer {
             .clone();
         let view = self.view(&source, wgpu::TextureAspect::All);
         let size = (source.width(), source.height());
-        self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle);
+        if let Some(destination) =
+            self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle)
+        {
+            self.depth_resolves.remove(&destination);
+        }
     }
 
     /// A depth resolve: one sample per pixel of the depth surface's depth, as a float texture
@@ -1680,7 +2009,12 @@ impl Renderer {
             .clone();
         let view = self.view(&source, wgpu::TextureAspect::DepthOnly);
         let size = (source.width(), source.height());
-        self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle);
+        let float_depth = edram::depth_is_float(read_register(memory, registers::RB_DEPTH_INFO));
+        if let Some(destination) =
+            self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle)
+        {
+            self.depth_resolves.insert(destination, float_depth);
+        }
     }
 
     fn resolved_depth_format(&self) -> wgpu::TextureFormat {
@@ -1707,7 +2041,7 @@ impl Renderer {
         (source_width, source_height): (u32, u32),
         surface: Surface,
         rectangle: Rectangle,
-    ) {
+    ) -> Option<wgpu::Texture> {
         let register = |index| read_register(memory, index);
         let pitch = register(registers::RB_COPY_DEST_PITCH);
         let (width, height) = (
@@ -1719,9 +2053,14 @@ impl Renderer {
             .clamp(width, height)
             .clamp(source_width >> sample_x, source_height >> sample_y);
         if rectangle.is_empty() {
-            return;
+            return None;
         }
         let destination_address = register(registers::RB_COPY_DEST_BASE);
+        if self.resolve_dump.is_some() {
+            info!(target: "dump", "resolve: to {destination_address:#010x} {width}x{height}, rectangle {rectangle:?}, dest info {:#010x}, control {:#010x}, surface {:#010x}, color info {:#010x}, source {source_width}x{source_height}",
+                register(registers::RB_COPY_DEST_INFO), register(registers::RB_COPY_CONTROL), register(registers::RB_SURFACE_INFO),
+                register(registers::RB_COLOR_INFO));
+        }
         // Titles resolve the screen's lower tile to the address of its first row, inside the
         // texture the upper tile was resolved to.
         let containing = self.resolved.iter().find_map(|(&base, texture)| {
@@ -1826,6 +2165,7 @@ impl Renderer {
             dump.readbacks
                 .extend(Readback::record(&self.device, encoder, &destination, path));
         }
+        Some(destination)
     }
 }
 
@@ -2078,6 +2418,162 @@ fn create_resolve(
     ResolvePipeline { pipeline, format }
 }
 
+/// The two directions depth moves between the host's depth surfaces and EDRAM's words.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum DepthAliasing {
+    /// A depth resolve to the 8888 texture of its EDRAM words.
+    Pack,
+    /// EDRAM words drawn as colour to a depth surface.
+    Unpack,
+    /// A depth surface's EDRAM words, read as the colour surface sharing them.
+    Repack,
+}
+
+fn create_depth_aliasing(
+    device: &wgpu::Device,
+    kind: DepthAliasing,
+    float_depth: bool,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("depth aliasing"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(DEPTH_ALIASING_SHADER)),
+    });
+    let constants = [("FLOAT_DEPTH", if float_depth { 1.0 } else { 0.0 })];
+    let compilation_options = wgpu::PipelineCompilationOptions {
+        constants: &constants,
+        ..Default::default()
+    };
+    let (entry_point, targets, depth_stencil): (_, &[_], _) = match kind {
+        DepthAliasing::Repack => (
+            "repack",
+            &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            None,
+        ),
+        DepthAliasing::Pack => (
+            "pack",
+            &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+            None,
+        ),
+        DepthAliasing::Unpack => (
+            "unpack",
+            &[],
+            Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: Default::default(),
+            }),
+        ),
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("depth aliasing"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vertex"),
+            compilation_options: compilation_options.clone(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(entry_point),
+            compilation_options,
+            targets,
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Depth as EDRAM holds it: a word of 24 bits of depth above 8 of stencil, the depth a 24-bit
+/// unorm or (D24FS8) a 20e4 float, converted as Xenia's Float32To20e4 and Float20e4To32 do.
+/// As an 8888 surface or texture, the word's low byte is red. EDRAM tiles are 80 samples wide,
+/// and depth surfaces keep the two 40-sample halves of each the other way round from colour, so
+/// a depth sample is the colour sample 40 along in its tile (host surfaces are in samples,
+/// starting at a tile's edge).
+const DEPTH_ALIASING_SHADER: &str = "\
+override FLOAT_DEPTH: bool;
+@group(0) @binding(0) var source: texture_2d<f32>;
+
+@vertex
+fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+
+fn encode_depth(depth: f32) -> u32 {
+    if !FLOAT_DEPTH {
+        return u32(round(saturate(depth) * 16777215.0));
+    }
+    var bits = bitcast<u32>(depth);
+    if bitcast<i32>(bits) <= 0 {
+        return 0u;
+    }
+    if bits >= 0x3FFFFFF8u {
+        return 0xFFFFFFu;
+    }
+    if bits < 0x38800000u {
+        // Below 20e4's smallest normal value, 2^-14: a denormal.
+        bits = (0x800000u | (bits & 0x7FFFFFu)) >> min(113u - (bits >> 23u), 24u);
+    } else {
+        // Rebias the exponent from f32's 127 to 20e4's 15.
+        bits += 0xC8000000u;
+    }
+    // Round to nearest, ties to even, as the mantissa drops from 23 bits to 20.
+    bits += 3u + ((bits >> 3u) & 1u);
+    return (bits >> 3u) & 0xFFFFFFu;
+}
+
+fn decode_depth(depth: u32) -> f32 {
+    if !FLOAT_DEPTH {
+        return f32(depth) / 16777215.0;
+    }
+    var exponent = depth >> 20u;
+    var mantissa = depth & 0xFFFFFu;
+    if exponent == 0u {
+        if mantissa == 0u {
+            return 0.0;
+        }
+        let shift = countLeadingZeros(mantissa) - 11u;
+        exponent = 1u - shift;
+        mantissa = (mantissa << shift) & 0xFFFFFu;
+    }
+    return bitcast<f32>(((exponent + 112u) << 23u) | (mantissa << 3u));
+}
+
+@fragment
+fn pack(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let depth = textureLoad(source, vec2<u32>(position.xy), 0).x;
+    return unpack4x8unorm(encode_depth(depth) << 8u);
+}
+
+const TILE_SAMPLES: u32 = 80u;
+
+// The sample 40 along in its 80-sample EDRAM tile: where colour and depth exchange halves.
+fn swapped_sample(sample: vec2<u32>) -> vec2<u32> {
+    let tile_start = sample.x - sample.x % TILE_SAMPLES;
+    return vec2<u32>(tile_start + (sample.x % TILE_SAMPLES + TILE_SAMPLES / 2u) % TILE_SAMPLES, sample.y);
+}
+
+@group(0) @binding(1) var depth_source: texture_depth_2d;
+
+@fragment
+fn repack(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let depth = textureLoad(depth_source, swapped_sample(vec2<u32>(position.xy)), 0);
+    return unpack4x8unorm(encode_depth(depth) << 8u);
+}
+
+@fragment
+fn unpack(@builtin(position) position: vec4<f32>) -> @builtin(frag_depth) f32 {
+    let word = pack4x8unorm(textureLoad(source, swapped_sample(vec2<u32>(position.xy)), 0));
+    return decode_depth(word >> 8u);
+}
+";
+
 /// RB_MODECONTROL's modes for ordinary colour and depth rendering, and for depth alone.
 const EDRAM_MODE_COLOR_DEPTH: u32 = 4;
 const EDRAM_MODE_DEPTH_ONLY: u32 = 5;
@@ -2188,6 +2684,47 @@ fn host_primitive(
     })
 }
 
+/// Whether RB_DEPTHCONTROL lets a draw write depth or stencil.
+fn writes_depth_or_stencil(control: u32) -> bool {
+    const STENCIL_ENABLE: u32 = 1 << 0;
+    const Z_ENABLE_AND_WRITE: u32 = (1 << 1) | (1 << 2);
+    control & Z_ENABLE_AND_WRITE == Z_ENABLE_AND_WRITE || control & STENCIL_ENABLE != 0
+}
+
+/// What a draw's PA_SU_SC_MODE_CNTL culls.
+#[derive(Debug, PartialEq, Eq)]
+enum Culling {
+    Nothing,
+    /// The faces culled, and which winding faces the front.
+    Faces(wgpu::Face, wgpu::FrontFace),
+    /// Front and back faces both: the draw draws nothing.
+    Everything,
+}
+
+/// As on the console, only triangles and quads are culled; the title's rectangles
+/// (screen-space quads) never are. Windings are in framebuffer space, Y down, on the console
+/// and on the host alike.
+fn culling(mode_control: u32, entry: VertexEntry, topology: wgpu::PrimitiveTopology) -> Culling {
+    use wgpu::PrimitiveTopology as Topology;
+    let polygonal = entry != VertexEntry::RectangleList
+        && matches!(topology, Topology::TriangleList | Topology::TriangleStrip);
+    let front_face = if mode_control & FRONT_FACE_CLOCKWISE != 0 {
+        wgpu::FrontFace::Cw
+    } else {
+        wgpu::FrontFace::Ccw
+    };
+    match (
+        mode_control & CULL_FRONT != 0,
+        mode_control & CULL_BACK != 0,
+    ) {
+        _ if !polygonal => Culling::Nothing,
+        (false, false) => Culling::Nothing,
+        (true, true) => Culling::Everything,
+        (true, false) => Culling::Faces(wgpu::Face::Front, front_face),
+        (false, true) => Culling::Faces(wgpu::Face::Back, front_face),
+    }
+}
+
 /// A draw's guest indices in host order: `count` of them from `start` bytes into `guest` (raw
 /// guest memory, read as the GPU reads it: little-endian words, then the index buffer's byte
 /// order), each 16 or 32 bits.
@@ -2268,6 +2805,19 @@ fn position_transform(
     )
 }
 
+/// `position_format` in the constants: PA_CL_VTE_CNTL's three W formats, and whether
+/// PA_CL_CLIP_CNTL turns clipping off.
+fn position_format(vte_control: u32, clip_control: u32) -> u32 {
+    const CLIP_DISABLE: u32 = 1 << 16;
+    const CLIPPING_OFF: u32 = 1 << 3;
+    let clipping = if clip_control & CLIP_DISABLE != 0 {
+        CLIPPING_OFF
+    } else {
+        0
+    };
+    ((vte_control >> VTE_FORMAT_SHIFT) & VTE_FORMAT_MASK) | clipping
+}
+
 /// The per-draw values after the register blocks in the constants buffer.
 struct DrawWords {
     /// Each vertex fetch constant's buffer's byte offset in the batch's guest memory.
@@ -2279,6 +2829,56 @@ struct DrawWords {
     position_format: u32,
     scale: [f32; 3],
     offset: [f32; 3],
+    alpha_test: [u32; ALPHA_TEST_WORDS],
+    pixel_parameters: u32,
+}
+
+/// The alpha test's words in the constants buffer, from RB_COLORCONTROL, RB_ALPHA_REF (a
+/// float's bits) and the surface's samples per pixel (see `translate::CONSTANTS_LAYOUT`).
+fn alpha_test_words(
+    color_control: u32,
+    reference: u32,
+    (sample_x, sample_y): (u32, u32),
+) -> [u32; ALPHA_TEST_WORDS] {
+    const FUNCTION_MASK: u32 = 0x7;
+    const TEST_ENABLE: u32 = 1 << 3;
+    const TO_MASK_ENABLE: u32 = 1 << 4;
+    const TO_MASK_OFFSETS_SHIFT: u32 = 24;
+    const COMPARE_ALWAYS: u32 = 7;
+    /// `alpha_to_mask`'s bit saying alpha to coverage is on, above its offsets.
+    const TO_MASK_ON: u32 = 1 << 8;
+    const SAMPLE_Y_SHIFT: u32 = 2;
+    let function = if color_control & TEST_ENABLE != 0 {
+        color_control & FUNCTION_MASK
+    } else {
+        COMPARE_ALWAYS
+    };
+    let to_mask = if color_control & TO_MASK_ENABLE != 0 {
+        (color_control >> TO_MASK_OFFSETS_SHIFT) | TO_MASK_ON
+    } else {
+        0
+    };
+    [
+        function,
+        reference,
+        to_mask,
+        sample_x | (sample_y << SAMPLE_Y_SHIFT),
+    ]
+}
+
+/// The register a pixel shader finds the pixel parameters in (Xenos ps_param_gen): if
+/// SQ_PROGRAM_CNTL asks for them, the interpolator SQ_CONTEXT_MISC names; otherwise none, as
+/// `translate::NO_PIXEL_PARAMETERS`.
+fn pixel_parameters_register(program_control: u32, context_misc: u32) -> u32 {
+    const PARAMETERS_ENABLE: u32 = 1 << 18;
+    const POSITION_SHIFT: u32 = 8;
+    const POSITION_MASK: u32 = 0xFF;
+    let register = (context_misc >> POSITION_SHIFT) & POSITION_MASK;
+    if program_control & PARAMETERS_ENABLE != 0 && register < translate::INTERPOLATORS {
+        register
+    } else {
+        translate::NO_PIXEL_PARAMETERS
+    }
 }
 
 /// The constants buffer's words, in the order of `translate::CONSTANTS_LAYOUT`.
@@ -2326,6 +2926,8 @@ fn constants_words(
             .map(|value| value.to_bits()),
     );
     words.extend(swizzles);
+    words.extend(draw.alpha_test);
+    words.push(draw.pixel_parameters);
     words.resize(CONSTANTS_SIZE as usize / WORD_SIZE as usize, 0);
     words
 }
@@ -2481,7 +3083,81 @@ mod tests {
             offset("texture_swizzles"),
             (register_words + DRAW_WORDS) * 4
         );
+        assert_eq!(
+            offset("alpha_function"),
+            (register_words + DRAW_WORDS + TEXTURE_CONSTANTS) * 4
+        );
+        assert_eq!(
+            offset("pixel_parameters"),
+            (register_words + DRAW_WORDS + TEXTURE_CONSTANTS + ALPHA_TEST_WORDS) * 4
+        );
         assert_eq!(u64::from(layouter[handle].size), CONSTANTS_SIZE);
+    }
+
+    #[test]
+    fn the_depth_aliasing_shader_is_valid_wgsl() {
+        if let Err(error) = translate::validate(DEPTH_ALIASING_SHADER) {
+            panic!("{error}");
+        }
+    }
+
+    #[test]
+    fn culling_follows_pa_su_sc_mode_cntl_for_triangles_only() {
+        use wgpu::PrimitiveTopology::TriangleList;
+        // Back faces culled, clockwise in front, as most of Pure's 3D draws ask.
+        let cull_back_clockwise = 0x0021_8006;
+        assert_eq!(
+            culling(cull_back_clockwise, VertexEntry::Indexed, TriangleList),
+            Culling::Faces(wgpu::Face::Back, wgpu::FrontFace::Cw)
+        );
+        assert_eq!(
+            culling(
+                cull_back_clockwise,
+                VertexEntry::RectangleList,
+                TriangleList
+            ),
+            Culling::Nothing
+        );
+        assert_eq!(
+            culling(CULL_FRONT | CULL_BACK, VertexEntry::Direct, TriangleList),
+            Culling::Everything
+        );
+    }
+
+    #[test]
+    fn pixel_parameters_go_to_the_register_sq_context_misc_names_when_enabled() {
+        const PARAMETERS_ENABLE: u32 = 1 << 18;
+        const REGISTER_1: u32 = 1 << 8;
+        assert_eq!(pixel_parameters_register(PARAMETERS_ENABLE, REGISTER_1), 1);
+        assert_eq!(
+            pixel_parameters_register(0, REGISTER_1),
+            translate::NO_PIXEL_PARAMETERS
+        );
+    }
+
+    #[test]
+    fn disabled_clipping_is_passed_with_the_w_formats() {
+        const CLIP_DISABLE: u32 = 1 << 16;
+        // Direct3D's clears: XY and Z already divided by W, clipping off.
+        assert_eq!(position_format(0x300, CLIP_DISABLE), 0b1011);
+        assert_eq!(position_format(0x300, 0), 0b0011);
+    }
+
+    #[test]
+    fn alpha_test_words_follow_rb_colorcontrol() {
+        const HALF: u32 = 0x3F00_0000;
+        const COMPARE_ALWAYS: u32 = 7;
+        const COMPARE_GREATER: u32 = 4;
+        // Pure's foliage: greater than the reference, with alpha to coverage, 4x samples.
+        assert_eq!(
+            alpha_test_words(0xFF00_001C, HALF, (1, 1)),
+            [COMPARE_GREATER, HALF, 0x1FF, 0b101]
+        );
+        // A comparison is set, but the test is off.
+        assert_eq!(
+            alpha_test_words(0x8700_0004, HALF, (0, 0)),
+            [COMPARE_ALWAYS, HALF, 0, 0]
+        );
     }
 
     #[test]

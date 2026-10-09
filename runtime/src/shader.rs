@@ -180,13 +180,20 @@ pub enum Instruction {
 /// Fetch opcodes, in the low five bits of the first word.
 const FETCH_VERTEX: u32 = 0;
 const FETCH_TEXTURE: u32 = 1;
+/// setTextureLOD: the level later texture fetches read when they use the register's.
+pub const FETCH_SET_TEXTURE_LOD: u32 = 24;
+
+/// A fetch instruction's opcode.
+pub fn fetch_opcode(words: [u32; 3]) -> u32 {
+    bits(words[0], 0, 5)
+}
 
 impl Instruction {
     fn decode(words: [u32; 3], is_fetch: bool) -> Self {
         if !is_fetch {
             return Self::Alu(Alu(words));
         }
-        match bits(words[0], 0, 5) {
+        match fetch_opcode(words) {
             FETCH_VERTEX => Self::VertexFetch(VertexFetch(words)),
             FETCH_TEXTURE => Self::TextureFetch(TextureFetch(words)),
             _ => Self::OtherFetch(words),
@@ -418,6 +425,28 @@ impl TextureFetch {
     pub fn predicate(self) -> Option<bool> {
         (bits(self.0[1], 31, 1) != 0).then_some(bits(self.0[2], 31, 1) != 0)
     }
+    /// The level is setTextureLOD's rather than the base level.
+    pub fn uses_register_lod(self) -> bool {
+        bits(self.0[1], 29, 1) != 0
+    }
+    /// Added to the level, in sixteenths.
+    pub fn lod_bias(self) -> f32 {
+        const SIXTEENTHS: f32 = 16.0;
+        signed_bits(self.0[2], 2, 7) as f32 / SIXTEENTHS
+    }
+    /// The X and Y offsets added to the coordinates, in texels (stored in half texels).
+    pub fn offsets(self) -> (f32, f32) {
+        const HALVES: f32 = 2.0;
+        (
+            signed_bits(self.0[2], 16, 5) as f32 / HALVES,
+            signed_bits(self.0[2], 21, 5) as f32 / HALVES,
+        )
+    }
+}
+
+/// A signed field of `width` bits.
+const fn signed_bits(word: u32, shift: u32, width: u32) -> i32 {
+    ((word << (32 - shift - width)) as i32) >> (32 - width)
 }
 
 /// A fetch destination swizzle as text: three bits per component, naming a fetched component,
@@ -552,13 +581,22 @@ impl Program {
                 ),
                 Instruction::TextureFetch(fetch) => writeln!(
                     text,
-                    "{address:3}: tfetch{}D r{}.{} <- r{}.{} tf{}",
+                    "{address:3}: tfetch{}D r{}.{} <- r{}.{} tf{}{}{}",
                     fetch.dimension() + 1,
                     fetch.dest_register(),
                     fetch_swizzle(fetch.dest_swizzle()),
                     fetch.source_register(),
                     coordinate_swizzle(fetch.source_swizzle()),
-                    fetch.constant()
+                    fetch.constant(),
+                    match fetch.offsets() {
+                        (0.0, 0.0) => String::new(),
+                        (x, y) => format!(" offset ({x}, {y})"),
+                    },
+                    if fetch.uses_register_lod() {
+                        " register LOD"
+                    } else {
+                        ""
+                    }
                 ),
                 Instruction::OtherFetch(words) => writeln!(text, "{address:3}: fetch {words:08x?}"),
             };

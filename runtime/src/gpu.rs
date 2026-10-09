@@ -32,11 +32,16 @@ pub mod registers {
     /// The blend constant: red, then green, blue and alpha, as floats.
     pub const RB_BLEND_RED: u32 = 0x2105;
     pub const RB_STENCILREFMASK: u32 = 0x210D;
+    /// The alpha test's reference value, as a float.
+    pub const RB_ALPHA_REF: u32 = 0x210E;
     /// Followed by X offset, Y scale, Y offset, Z scale and Z offset, as floats.
     pub const PA_CL_VPORT_XSCALE: u32 = 0x210F;
     pub const SQ_PROGRAM_CNTL: u32 = 0x2180;
+    pub const SQ_CONTEXT_MISC: u32 = 0x2181;
     pub const RB_DEPTHCONTROL: u32 = 0x2200;
     pub const RB_BLENDCONTROL0: u32 = 0x2201;
+    pub const RB_COLORCONTROL: u32 = 0x2202;
+    pub const PA_CL_CLIP_CNTL: u32 = 0x2204;
     pub const PA_SU_SC_MODE_CNTL: u32 = 0x2205;
     pub const PA_CL_VTE_CNTL: u32 = 0x2206;
     pub const RB_MODECONTROL: u32 = 0x2208;
