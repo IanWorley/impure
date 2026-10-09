@@ -64,9 +64,10 @@ case "$(uname -s)" in
     MINGW* | MSYS*)
         platform_flags+=(--toolchain=msvc)
         # MSYS2 runs as x86-64 on Windows on Arm, so configure would detect x86: take the
-        # architecture the MSVC environment targets instead.
+        # architecture the MSVC environment targets instead. Arm assembly under MSVC needs
+        # gas-preprocessor; WMA Pro decodes fine without it.
         if [[ "${VSCMD_ARG_TGT_ARCH:-}" == arm64 ]]; then
-            platform_flags+=(--arch=aarch64)
+            platform_flags+=(--arch=aarch64 --disable-asm)
         fi
         ;;
 esac
