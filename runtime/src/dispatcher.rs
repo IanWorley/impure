@@ -255,6 +255,18 @@ fn write_header(memory: &GuestMemory, object: u32, kind: ObjectType, signal_stat
     memory.write_u32(wait_list + WAIT_LIST_LINK_SIZE, wait_list);
 }
 
+/// An object's type and raw signal state, for diagnostics.
+pub fn describe(memory: &GuestMemory, object: u32) -> String {
+    let state = memory.read_u32(object + HEADER_SIGNAL_STATE);
+    match object_type(memory, object) {
+        Ok(kind) => format!("{object:#010x} {kind:?} state {state}"),
+        Err(_) => format!(
+            "{object:#010x} type {} state {state}",
+            memory.read_u8(object + HEADER_TYPE)
+        ),
+    }
+}
+
 pub fn object_type(memory: &GuestMemory, object: u32) -> Result<ObjectType, DispatcherError> {
     let type_byte = memory.read_u8(object + HEADER_TYPE);
     ObjectType::from_byte(type_byte).ok_or(DispatcherError::UnknownObjectType { object, type_byte })

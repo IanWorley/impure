@@ -12,7 +12,6 @@ pub fn report_stop(reason: String) {
 
 /// Stops the calling guest thread for good. Unwinding through generated C++ frames is not
 /// possible, so the thread parks instead of returning.
-#[cfg(feature = "recompiled")]
 pub fn halt_guest_thread(reason: String) -> ! {
     report_stop(reason);
     loop {

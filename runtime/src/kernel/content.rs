@@ -8,7 +8,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use bevy::log::info;
+use bevy::log::{debug, info};
 
 use super::{HANDLES, ImportCall, KernelObject, files, overlapped};
 use crate::{guest, xex_header};
@@ -44,9 +44,7 @@ const DISPLAY_NAME_SUFFIX: &str = ".display_name";
 /// XEX_HEADER_EXECUTION_INFO, whose title ID the content directories are named after.
 const EXECUTION_INFO_KEY: u32 = 0x0004_0006;
 const EXECUTION_INFO_TITLE_ID: u32 = 0xC;
-/// Where the runtime keeps saves, unless PURE_DATA_DIR says otherwise.
-const DATA_DIRECTORY_ENVIRONMENT: &str = "PURE_DATA_DIR";
-const DATA_DIRECTORY_NAME: &str = "pure-runtime";
+/// Saves live here, under the runtime's data directory (src/data_dir.rs).
 const CONTENT_DIRECTORY: &str = "content";
 
 /// XCONTENT_DEVICE_DATA: device ID, device type, total and free bytes, then a 28-character
@@ -100,30 +98,6 @@ pub(super) struct Enumerator {
     next: usize,
 }
 
-/// The directory the runtime keeps the title's saves under.
-fn data_directory() -> PathBuf {
-    if let Some(directory) = std::env::var_os(DATA_DIRECTORY_ENVIRONMENT) {
-        return PathBuf::from(directory);
-    }
-    let home = || {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-    };
-    let base = if cfg!(windows) {
-        std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-    } else if cfg!(target_os = "macos") {
-        home().join("Library").join("Application Support")
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".local").join("share"))
-    };
-    base.join(DATA_DIRECTORY_NAME)
-}
-
 fn title_id() -> u32 {
     let memory = guest::memory();
     xex_header::field(memory, guest::xex_header(), EXECUTION_INFO_KEY)
@@ -132,7 +106,7 @@ fn title_id() -> u32 {
 
 /// The directory holding the profile's packages of `content_type`.
 pub(super) fn content_type_directory(content_type: u32) -> PathBuf {
-    data_directory()
+    crate::data_dir::root()
         .join(CONTENT_DIRECTORY)
         .join(format!("{:016X}", super::user::LOCAL_PROFILE_XUID))
         .join(format!("{:08X}", title_id()))
@@ -343,6 +317,53 @@ pub(super) fn create_ex(call: &ImportCall) -> u32 {
     match call.argument(CREATE_OVERLAPPED) {
         0 => result,
         overlapped => overlapped::complete_with_length(call, overlapped, result, disposition),
+    }
+}
+
+/// XamContentGetCreator's arguments: user, content data, is-creator out, creator XUID out,
+/// overlapped.
+const CREATOR_CONTENT_DATA: u32 = 1;
+const CREATOR_IS_CREATOR_OUT: u32 = 2;
+const CREATOR_XUID_OUT: u32 = 3;
+const CREATOR_OVERLAPPED: u32 = 4;
+/// Saves are the one content type the local profile creates; other content (downloads) has no
+/// creator here.
+const SAVED_GAME_CONTENT_TYPE: u32 = 1;
+const NO_CREATOR_XUID: u64 = 0;
+
+/// XamContentGetCreator(user, content data, is creator out, creator XUID out, overlapped) ->
+/// Win32 error. The local profile made every save on this machine.
+pub(super) fn get_creator(call: &ImportCall) -> u32 {
+    let memory = call.memory;
+    let data = call.argument(CREATOR_CONTENT_DATA);
+    let content_type = memory.read_u32(data + CONTENT_TYPE as u32);
+    let file_name = read_c_string(call, data + CONTENT_FILE_NAME as u32);
+    let result = if content_type_directory(content_type)
+        .join(&file_name)
+        .is_dir()
+    {
+        ERROR_SUCCESS
+    } else {
+        ERROR_PATH_NOT_FOUND
+    };
+    let is_save = content_type == SAVED_GAME_CONTENT_TYPE;
+    let is_creator_out = call.argument(CREATOR_IS_CREATOR_OUT);
+    if is_creator_out != 0 {
+        memory.write_u32(is_creator_out, u32::from(is_save));
+    }
+    let xuid_out = call.argument(CREATOR_XUID_OUT);
+    if xuid_out != 0 {
+        let creator = if is_save {
+            super::user::LOCAL_PROFILE_XUID
+        } else {
+            NO_CREATOR_XUID
+        };
+        memory.write_u64(xuid_out, creator);
+    }
+    debug!(target: "content", "creator of {file_name:?} (type {content_type:#x}) -> {result}");
+    match call.argument(CREATOR_OVERLAPPED) {
+        0 => result,
+        overlapped => overlapped::complete(call, overlapped, result),
     }
 }
 

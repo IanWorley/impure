@@ -27,6 +27,7 @@ pub mod registers {
     pub const PA_SC_WINDOW_SCISSOR_TL: u32 = 0x2081;
     pub const PA_SC_WINDOW_SCISSOR_BR: u32 = 0x2082;
     pub const VGT_INDX_OFFSET: u32 = 0x2102;
+    pub const VGT_MULTI_PRIM_IB_RESET_INDX: u32 = 0x2103;
     pub const RB_COLOR_MASK: u32 = 0x2104;
     /// The blend constant: red, then green, blue and alpha, as floats.
     pub const RB_BLEND_RED: u32 = 0x2105;

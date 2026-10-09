@@ -5,6 +5,7 @@
 //! stops the calling guest thread, so the stop line names the next import to implement.
 
 mod audio;
+mod clock;
 mod content;
 mod files;
 mod input;
@@ -30,11 +31,13 @@ use std::sync::{Arc, Mutex};
 
 use bevy::log::{debug, info};
 
-use crate::guest;
 use crate::handles::HandleTable;
 use crate::memory::GuestMemory;
+use crate::{game_module, guest};
 use crate::{status, timebase};
 
+/// The variable import the runtime keeps current, as the console's clock interrupt does.
+const TIME_STAMP_BUNDLE: &str = "KeTimeStampBundle";
 /// Size of the zero-filled block backing each variable import (exported kernel data).
 const VARIABLE_IMPORT_SIZE: u32 = 0x1000;
 const VARIABLE_IMPORT_ALIGNMENT: u32 = 0x10;
@@ -60,6 +63,7 @@ enum KernelObject {
 
 pub use files::mount_disc;
 pub use threads::start_main_thread;
+pub use video::frames_presented;
 
 static HANDLES: Mutex<HandleTable<KernelObject>> = Mutex::new(HandleTable::new());
 
@@ -69,15 +73,8 @@ pub struct GuestContext {
     _private: [u8; 0],
 }
 
-unsafe extern "C" {
-    fn pure_ctx_argument(ctx: *const GuestContext, index: u32) -> u64;
-    fn pure_ctx_set_return(ctx: *mut GuestContext, value: u64);
-    fn pure_ctx_return_address(ctx: *const GuestContext) -> u32;
-    fn pure_ctx_stack_pointer(ctx: *const GuestContext) -> u32;
-}
-
 /// NTSTATUS values the handlers return.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) struct NtStatus(pub(super) u32);
 
 impl NtStatus {
@@ -123,10 +120,10 @@ impl ImportCall {
     pub(super) fn argument(&self, index: u32) -> u32 {
         if index < REGISTER_ARGUMENT_COUNT {
             // SAFETY: ctx is the caller's live context.
-            return unsafe { pure_ctx_argument(self.ctx, index) as u32 };
+            return unsafe { (game_module::get().ctx_argument)(self.ctx, index) as u32 };
         }
         // SAFETY: as above.
-        let stack_pointer = unsafe { pure_ctx_stack_pointer(self.ctx) };
+        let stack_pointer = unsafe { (game_module::get().ctx_stack_pointer)(self.ctx) };
         let slot = index - REGISTER_ARGUMENT_COUNT;
         self.memory
             .read_u32(stack_pointer + STACK_ARGUMENTS_OFFSET + slot * STACK_ARGUMENT_SLOT_SIZE)
@@ -134,7 +131,7 @@ impl ImportCall {
 
     pub(super) fn return_address(&self) -> u32 {
         // SAFETY: as above.
-        unsafe { pure_ctx_return_address(self.ctx) }
+        unsafe { (game_module::get().ctx_return_address)(self.ctx) }
     }
 
     fn logged_arguments(&self) -> String {
@@ -215,6 +212,7 @@ fn handler(name: &str) -> Option<ImportHandler> {
         "MmFreePhysicalMemory" => Word(memory::mm_free_physical_memory),
         "MmGetPhysicalAddress" => Word(memory::mm_get_physical_address),
         "MmQueryAddressProtect" => Word(memory::mm_query_address_protect),
+        "MmQueryAllocationSize" => Word(memory::mm_query_allocation_size),
         "NetDll_XNetGetEthernetLinkStatus" => Word(network::xnet_get_ethernet_link_status),
         "NetDll_XNetGetTitleXnAddr" => Word(network::xnet_get_title_xn_addr),
         "NtAllocateVirtualMemory" => Word(memory::nt_allocate_virtual_memory),
@@ -232,6 +230,7 @@ fn handler(name: &str) -> Option<ImportHandler> {
         "NtQueryDirectoryFile" => Word(files::nt_query_directory_file),
         "NtQueryFullAttributesFile" => Word(files::nt_query_full_attributes_file),
         "NtQueryInformationFile" => Word(files::nt_query_information_file),
+        "NtSetInformationFile" => Word(files::nt_set_information_file),
         "NtReadFile" => Word(files::nt_read_file),
         "NtReleaseMutant" => Word(objects::nt_release_mutant),
         "NtReleaseSemaphore" => Word(objects::nt_release_semaphore),
@@ -315,6 +314,7 @@ fn handler(name: &str) -> Option<ImportHandler> {
         "XamContentClose" => Word(content::close),
         "XamContentCreateEnumerator" => Word(content::create_enumerator),
         "XamContentCreateEx" => Word(content::create_ex),
+        "XamContentGetCreator" => Word(content::get_creator),
         "XamContentGetDeviceData" => Word(content::get_device_data),
         "XamEnumerate" => Word(content::enumerate),
         "XamGetSystemVersion" => Word(system::system_version),
@@ -333,9 +333,9 @@ fn handler(name: &str) -> Option<ImportHandler> {
     })
 }
 
-/// Called by the generated import forwarders on the guest thread.
-#[unsafe(no_mangle)]
-extern "C" fn pure_import_call(name: *const c_char, ctx: *mut GuestContext, _base: *mut u8) {
+/// Called by the generated import forwarders on the guest thread (through the game library's
+/// host table; see src/game_module.rs).
+pub(crate) extern "C" fn import_call(name: *const c_char, ctx: *mut GuestContext, _base: *mut u8) {
     // SAFETY: the forwarders pass string literals and the live guest context.
     let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
     let call = ImportCall {
@@ -355,7 +355,7 @@ extern "C" fn pure_import_call(name: *const c_char, ctx: *mut GuestContext, _bas
     let thread = guest::current_thread();
     debug!(target: "import", "{name}({arguments}) from {return_address:#010x} -> {result:#x} [thread {thread:#010x}]");
     // SAFETY: ctx is the caller's live context.
-    unsafe { pure_ctx_set_return(ctx, result) };
+    unsafe { (game_module::get().ctx_set_return)(ctx, result) };
 }
 
 /// ANSI_STRING: the length in bytes, then (after the capacity) the buffer pointer.
@@ -383,20 +383,21 @@ fn nt_close(call: &ImportCall) -> u32 {
 
 /// Called on the guest thread when an indirect call targets an address with no recompiled
 /// function.
-#[unsafe(no_mangle)]
-extern "C" fn pure_unmapped_call_halt(target: u32, return_address: u32) -> ! {
+pub(crate) extern "C" fn unmapped_call_halt(target: u32, return_address: u32) -> ! {
     status::halt_guest_thread(format!(
         "indirect call to {target:#010x}, which has no recompiled function (return address {return_address:#010x})"
     ));
 }
 
 /// Called by the loader for each variable import; returns the guest address of its data.
-#[unsafe(no_mangle)]
-extern "C" fn pure_resolve_variable_import(name: *const c_char) -> u32 {
+pub(crate) extern "C" fn resolve_variable_import(name: *const c_char) -> u32 {
     // SAFETY: the loader passes a NUL-terminated name that outlives this call.
     let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
     let address = guest::allocate(VARIABLE_IMPORT_SIZE, VARIABLE_IMPORT_ALIGNMENT)
         .expect("system heap exhausted while resolving variable imports");
     info!(target: "import", "variable {name} -> {address:#010x} (zero-filled)");
+    if name == TIME_STAMP_BUNDLE {
+        clock::start(address);
+    }
     address
 }

@@ -5,25 +5,24 @@ This directory is the maintained source for verifying the user-facing behaviour 
 ## Baseline preconditions
 
 - `originals/disc/default.xex` is the user's own copy with SHA-256 `83c52e15…f33c` (doctor checks it).
-- `local/recomp/ppc` holds generated C++ from `tools/recompile.sh`.
-- `runtime/target/debug/pure-runtime` was built with `cargo build --features recompiled` after the last source change (doctor checks freshness).
-- `CI` is not set in the shell.
-- Never drive a runtime, X display, or `local/recomp` that this verification run did not create.
+- XenonRecomp is built in `local/tools/XenonRecomp/build-release` and `clang++` is available, so the runtime can build the game library (doctor checks both and reports whether a library is built).
+- The runtime binary was built after the last source change (doctor checks freshness); point `PURE_RUNTIME_BINARY` at a release build for anything past the start-up screens.
+- Never drive a runtime or X display that this verification run did not create, and never write into the user's data directory's `games/` or saves except through the runtime itself.
 
 ## Driving conventions
 
 - Run the window app only through `.claude/skills/verify-pure-runtime/scripts/run.sh <label> [args]`, from the repo root.
 - Run CLI features directly, capturing the command, stdout, stderr and exit code into `local/verification/<UTC timestamp>-<label>/`.
-- Never write to `local/recomp` or `originals/`. Generate into `local/verification/…` instead.
+- Never write to `originals/`. Use a scratch `PURE_DATA_DIR` for anything that builds or saves, and keep evidence in `local/verification/…`.
 - Mutations of Git state (staging probe files) happen only in a throwaway clone under `/tmp`.
 
 ## Proof and skip reporting
 
-- Runtime proof is the run directory: `summary.txt`, `runtime.log`, `screenshot.png`. Quote the outcome and stop line, and the frames presented for main-loop runs.
+- Runtime proof is the run directory: `summary.txt`, `runtime.log`, and `screenshot.png` (Linux) or frame captures from an input script (any host). Quote the outcome and stop line, and the frames presented for main-loop runs.
 - CLI proof is the command, its output, and its exit code, plus a read-only check of any file it was meant to write or refuse to write.
 - Record the feature ID and the commit (dirty or not) with every artifact.
-- If a precondition is unmet (no game copy, no generated C++), report the feature as not verified with the doctor output. Do not substitute the game-free build for the recompiled one.
-- Never quote generated C++ or bytes from the executable in a proof.
+- If a precondition is unmet (no game copy, no XenonRecomp build, no Clang), report the feature as not verified with the doctor output.
+- Never quote generated C++, anything under the data directory's `games/`, or bytes from the executable in a proof.
 
 ## Feature entry contract
 
@@ -31,11 +30,11 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 
 ## Features
 
-- [Boot to the main loop](./boot.md): the recompiled game boots, loads its assets and runs its main loop at 60 frames per second; covers stop lines and `--exit-on-stop`.
-- [Keyboard input](./input.md): the host keyboard drives controller 0 through a binding table, and the game reacts.
+- [Boot to the main loop](./boot.md): the game boots, loads its assets and runs its main loop at 60 frames per second; covers stop lines and `--exit-on-stop`.
+- [Keyboard input](./input.md): the host keyboard (or an `--input-script`) drives controller 0 through a binding table, and the game reacts.
 - [Rendering](./rendering.md): shaders translated to WGSL, draws run through wgpu, and the game's start-up screens shown in the window.
 - [Save games](./saves.md): the game creates, writes and reloads its save package in the runtime's data directory.
 - [Executable hash gate](./hash-gate.md): the runtime refuses any executable but the recorded one.
-- [Game-free build](./game-free-build.md): the runtime without `recompiled` opens the window and loads nothing.
-- [Recompile script](./recompile-script.md): `tools/recompile.sh` generates the C++ and refuses bad inputs.
+- [Launcher](./launcher.md): with no game, the window asks for one in the system's Open dialog, shows preparation and failures, and remembers the last game.
+- [Game library](./game-library.md): the runtime copies the disc out of an image and builds the game's code into a cached library on the user's machine, then loads it.
 - [Content guard](./content-guard.md): `tools/check-no-game-content.sh` blocks game data and generated code from Git.

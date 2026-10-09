@@ -16,20 +16,20 @@ Given the user's own `default.xex`, the runtime opens the `Pure (static recompil
 
 ## How to get to it (user POV)
 
-- `cargo run --features recompiled -- ../originals/disc/default.xex` from `runtime/`.
-- The built binary directly: `runtime/target/debug/pure-runtime originals/disc/default.xex [--exit-on-stop]`.
+- `cargo run --release -- ../originals/disc/default.xex` from `runtime/` (or the disc image), which builds the game library first if needed (see [game-library.md](./game-library.md)).
+- The built binary directly: `runtime/target/release/pure-runtime originals/disc/default.xex [--exit-on-stop]`.
 
 ## Driving it with run.sh
 
 Preconditions:
 
-- `scripts/doctor.sh` prints `ready` and reports the binary was built WITH the recompiled feature.
+- `scripts/doctor.sh` prints `ready` and reports the game library built (otherwise the first run spends about 10 minutes building it; build it first with `--build-game`).
 
 - **Main loop.** Run `VERIFY_RUN_SECONDS=60 .claude/skills/verify-pure-runtime/scripts/run.sh boot originals/disc/default.xex`. `summary.txt` shows `outcome: still running after 60s`, `window: present` and an empty `stop line:`. Under llvmpipe the frame count depends on how fast it renders (see [rendering.md](./rendering.md)); on a real GPU it is around 3600.
 - **Load and entry.** `grep -c 'import: variable' runtime.log` prints `13`; `grep 'entry point' runtime.log` shows `0x82254d60`.
-- **Frame pacing.** With `RUST_LOG=info,video=debug`, the `frame <n> presented` lines before `renderer: first guest frame presented` arrive 1/60 s apart; quote two timestamps sixty frames apart. Afterwards, under llvmpipe, they slow to the software GPU's pace.
-- **Shader translation.** Add `RUST_LOG=info,shader=debug` to a 30-second run. The two counts in the last `frames presented` line must be equal. Each `shader <hash>: valid WGSL, not translated: {…}` line lists what that shader still lacks; today that is only `texture fetch (returns white)`. A `invalid WGSL` warning carries naga's error. `cargo test translate` in `runtime/` covers every ALU opcode, the vertex formats and the control flow with synthetic shaders.
-- **Disc files.** Add `RUST_LOG=info,file=debug` to the run. `grep 'file: read' runtime.log` lists reads such as `"D:\\fonts\\Debug.textures"`.
+- **Frame pacing.** With `VERIFY_RUST_LOG=info,video=debug`, the `frame <n> presented` lines before `renderer: first guest frame presented` arrive 1/60 s apart; quote two timestamps sixty frames apart. Afterwards, under llvmpipe, they slow to the software GPU's pace.
+- **Shader translation.** Add `VERIFY_RUST_LOG=info,shader=debug` to a 30-second run. The two counts in the last `frames presented` line must be equal. Each `shader <hash>: valid WGSL, not translated: {…}` line lists what that shader still lacks; today that is only `texture fetch (returns white)`. A `invalid WGSL` warning carries naga's error. `cargo test translate` in `runtime/` covers every ALU opcode, the vertex formats and the control flow with synthetic shaders.
+- **Disc files.** Add `VERIFY_RUST_LOG=info,file=debug` to the run. `grep 'file: read' runtime.log` lists reads such as `"D:\\fonts\\Debug.textures"`.
 - **Threads.** `grep 'thread:' runtime.log` shows the created threads and `is named "LoaderThread"`.
 - **Window rendered.** `convert screenshot.png -format %c histogram:info:-` shows opaque black: the game's own (black) intro video frame, not the runtime's clear colour `#0D0D14`. [rendering.md](./rendering.md) drives it to visible screens.
 - **Stop and exit on stop.** The game no longer stops by itself, so prove both through the hash gate: run `.claude/skills/verify-pure-runtime/scripts/run.sh exit-on-stop /tmp/<wrong file> --exit-on-stop` (see [hash-gate.md](./hash-gate.md)); `summary.txt` shows `outcome: guest stopped` and `runtime exit: 0`.
@@ -37,11 +37,10 @@ Preconditions:
 
 ## Gotchas
 
-- A binary older than the source proves nothing; doctor flags it. A relink takes about 2 minutes. Generated objects are cached per file, so regenerating after a recompiler change rebuilds only the changed files.
-- Building the game-free runtime into the default target directory overwrites this binary. Use a separate `CARGO_TARGET_DIR`.
+- A binary older than the source proves nothing; doctor flags it. Rebuilding the runtime takes seconds and never rebuilds the game library; a change to `runtime/cpp/` recompiles only the glue at the next start.
 - Without `VERIFY_RUN_SECONDS`, a healthy run now ends as `timeout after 120s`: the harness's default mode waits for a stop that never comes.
 - Several guest threads run at once, so when something does stop the guest, which import stops first can differ between runs. Run twice before concluding.
-- Debug logging (`RUST_LOG=info,import=debug`) logs every import call, including about 100 critical section calls per frame; keep runs short with it.
+- Debug logging (`VERIFY_RUST_LOG=info,import=debug`) logs every import call, including about 100 critical section calls per frame; keep runs short with it.
 - With `--exit-on-stop`, the window is usually gone before the screenshot, so `window: absent` is expected there.
 - Addresses in the log are tied to this exact executable hash.
 - `shader=trace` logs each shader's disassembly and WGSL. Both are derived from the game, so they can be read locally but never quoted or committed.

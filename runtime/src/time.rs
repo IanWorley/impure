@@ -129,9 +129,49 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+/// KeTimeStampBundle's fields, big-endian: the time since boot and the system time, both in
+/// 100 ns units, then the milliseconds since boot.
+const BUNDLE_INTERRUPT_TIME: u32 = 0x0;
+const BUNDLE_SYSTEM_TIME: u32 = 0x8;
+const BUNDLE_TICK_COUNT: u32 = 0x10;
+
+/// Writes KeTimeStampBundle at `address` as the console's clock interrupt keeps it.
+pub fn write_time_stamp_bundle(
+    memory: &crate::memory::GuestMemory,
+    address: u32,
+    since_boot: std::time::Duration,
+    now: SystemTime,
+) {
+    let units = (since_boot.as_nanos() / u128::from(NANOSECONDS_PER_UNIT)) as u64;
+    memory.write_u64(address + BUNDLE_INTERRUPT_TIME, units);
+    memory.write_u64(address + BUNDLE_SYSTEM_TIME, filetime(now));
+    memory.write_u32(address + BUNDLE_TICK_COUNT, since_boot.as_millis() as u32);
+}
+
 /// The current time, as KeQuerySystemTime reports it.
 pub fn now() -> u64 {
     filetime(SystemTime::now())
+}
+
+#[cfg(test)]
+mod time_stamp_bundle_tests {
+    use super::*;
+    use crate::memory::GuestMemory;
+    use std::time::Duration;
+
+    #[test]
+    fn the_bundle_holds_interrupt_time_system_time_and_ticks() {
+        const BUNDLE: u32 = 0x1000;
+        let memory = GuestMemory::reserve().unwrap();
+        let now = SystemTime::now();
+        write_time_stamp_bundle(&memory, BUNDLE, Duration::from_millis(1500), now);
+        assert_eq!(memory.read_i64(BUNDLE + BUNDLE_INTERRUPT_TIME), 15_000_000);
+        assert_eq!(
+            memory.read_i64(BUNDLE + BUNDLE_SYSTEM_TIME) as u64,
+            filetime(now)
+        );
+        assert_eq!(memory.read_u32(BUNDLE + BUNDLE_TICK_COUNT), 1500);
+    }
 }
 
 #[cfg(test)]

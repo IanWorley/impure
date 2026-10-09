@@ -50,9 +50,10 @@ fn spawn_display(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
-    // The renderer draws into it through a plain (not sRGB) view.
+    // The renderer draws into it through a plain (not sRGB) view, and copies it out to capture
+    // frames.
     image.texture_descriptor.usage =
-        TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT;
+        TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC;
     image.texture_descriptor.view_formats = &[TextureFormat::Rgba8Unorm];
     let handle = images.add(image);
     commands.spawn((

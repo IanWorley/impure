@@ -7,11 +7,31 @@
 //! write the same bytes, as the console's physical memory views do. A range is only shared if
 //! the host can map memory at its address and offset; the host maps shared memory in pages (4 KiB
 //! on most Linux and Intel hosts, 16 KiB on Apple silicon) or, on Windows, 64 KiB units.
+//!
+//! One view can never be shared that way: the console's 4 KiB-page view of physical memory at
+//! 0xE0000000 starts one 4 KiB page into it. So accesses there are redirected instead, to the
+//! 64 KiB-page view's address for the same physical byte, by the generated code and by this
+//! module alike (see `host_address`).
 
 use std::io;
 
 /// Matches PPC_MEMORY_SIZE in XenonRecomp's ppc_context.h.
 pub const GUEST_ADDRESS_SPACE_SIZE: usize = 1 << 32;
+
+/// Guest addresses from here up are the 4 KiB-page view of physical memory...
+const REDIRECTED_VIEW_BASE: u32 = 0xE000_0000;
+/// ...whose first byte is physical address 0x1000, at this address in the 64 KiB-page view.
+const REDIRECTED_VIEW_TARGET: u32 = 0xA000_1000;
+
+/// Where an access to `address` lands in the host mapping. Matches PPC_MEMORY_ADDRESS in
+/// XenonRecomp's ppc_context.h (as tools/patches/xenonrecomp.patch defines it).
+pub const fn host_address(address: u32) -> u32 {
+    if address >= REDIRECTED_VIEW_BASE {
+        address - (REDIRECTED_VIEW_BASE - REDIRECTED_VIEW_TARGET)
+    } else {
+        address
+    }
+}
 
 /// A guest range that shows the shared block, starting `shared_offset` bytes into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,8 +183,8 @@ impl GuestMemory {
             address as usize + length <= GUEST_ADDRESS_SPACE_SIZE,
             "guest access of {length} bytes at {address:#010x} runs past the end of guest memory"
         );
-        // SAFETY: the range is inside the mapping.
-        unsafe { self.base().add(address as usize) }
+        // SAFETY: the range is inside the mapping, and redirecting moves it lower.
+        unsafe { self.base().add(host_address(address) as usize) }
     }
 }
 
@@ -480,7 +500,7 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
-    use super::{Alias, GuestHeap, GuestMemory};
+    use super::{Alias, GuestHeap, GuestMemory, REDIRECTED_VIEW_BASE, REDIRECTED_VIEW_TARGET};
 
     const HEAP_BASE: u32 = 0x7000_0000;
     const HEAP_SIZE: u32 = 0x1000;
@@ -517,6 +537,15 @@ mod tests {
             unsafe { *memory.base().add(ADDRESS as usize) },
             VALUE.to_be_bytes()[0]
         );
+    }
+
+    #[test]
+    fn the_redirected_view_shows_the_bytes_at_its_target() {
+        const OFFSET: u32 = 0x40;
+        const VALUE: u32 = 0x1234_5678;
+        let memory = GuestMemory::reserve().unwrap();
+        memory.write_u32(REDIRECTED_VIEW_BASE + OFFSET, VALUE);
+        assert_eq!(memory.read_u32(REDIRECTED_VIEW_TARGET + OFFSET), VALUE);
     }
 
     #[test]

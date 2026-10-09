@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 publish = false
+license = "MIT"
 description = "Rust runtime for a static recompilation of Pure (Xbox 360). Requires your own copy of the game."
 
 [features]
-# Compile and link the C++ that tools/recompile.sh generated from your own default.xex.
-# Without it the runtime builds anywhere (including CI) and only opens the window.
-# The window shows the guest's frames through a sprite, which the game-free build does not need.
-recompiled = ["dep:sha2", "bevy/bevy_sprite", "bevy/bevy_sprite_render"]
+# Real sound: FFmpeg decodes the title's XMA audio and cpal plays the frames
+# the title mixes. Needs FFmpeg's development files (libavcodec, found with pkg-config), linked
+# dynamically so FFmpeg's LGPL code stays a separate library, and on Linux ALSA's
+# (libasound2-dev). Off by default: CI and the game-free build need neither.
+audio = ["dep:ffmpeg-sys-next", "dep:cpal"]
 # Physical gamepads on Linux (other platforms always have them); needs libudev-dev to build.
 linux-gamepads = ["bevy/bevy_gilrs"]
 
@@ -25,18 +27,37 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "bevy_render",
     "bevy_core_pipeline",
     "bevy_camera",
+    # The guest's frames are shown through a sprite.
+    "bevy_sprite",
+    "bevy_sprite_render",
+    # The launcher: buttons and text, in Bevy's embedded default font (FiraMono, OFL).
+    "bevy_ui",
+    "bevy_ui_render",
+    "bevy_text",
+    "default_font",
     # X11 is loaded at run time; Wayland needs system libraries at build time, which would
     # break cross-target checks. Wayland desktops run this through XWayland.
     "x11",
 ] }
-sha2 = { version = "0.10", optional = true }
+sha2 = "0.10"
+# Loads the game library the builder compiles on the player's machine (src/game_module.rs).
+libloading = "0.8"
+# Writes frame captures and resolve dumps as PNG (the version Bevy already builds).
+image = { version = "0.25", default-features = false, features = ["png"] }
+ffmpeg-sys-next = { version = "9", default-features = false, features = ["avcodec"], optional = true }
+cpal = { version = "0.18", optional = true }
 # The WGSL front end wgpu itself uses (already built for Bevy): validates translated shaders.
 naga = { version = "29", features = ["wgsl-in"] }
 # The GPU API Bevy renders with (the same build): the guest's draws run on Bevy's device.
-wgpu = { version = "29", default-features = false, features = ["wgsl"] }
+# `std` makes error scopes per thread: without it they are one stack shared by the command
+# processor and the submit thread, which push and pop them independently.
+wgpu = { version = "29", default-features = false, features = ["std", "wgsl"] }
 # Not used directly: selects blake3's pure-Rust implementation for Bevy, so no target C
 # toolchain is needed and cross-target checks work.
 blake3 = { version = "1.8", features = ["pure"] }
+# The launcher's native Open dialog. On Linux it asks the desktop's XDG portal over D-Bus, so no
+# GTK or Wayland libraries are needed to build.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
 # Physical gamepads through gilrs. It needs no system libraries on Windows and macOS; on Linux
 # it needs libudev's development files, so there it is the opt-in `linux-gamepads` feature.
@@ -48,9 +69,6 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Threading"] }
-
-[build-dependencies]
-cc = { version = "1.2", features = ["parallel"] }
 
 # Bevy is slow unoptimized; keep our own code debuggable.
 # The runtime itself is optimized a little too: it decodes and hashes guest textures every

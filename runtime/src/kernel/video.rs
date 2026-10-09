@@ -67,8 +67,12 @@ impl command_processor::Environment for KernelEnvironment {
         info!(target: "gpu", "{message}");
     }
 
-    fn trace(&self, message: String) {
+    fn trace(&self, message: std::fmt::Arguments) {
         trace!(target: "gpu", "{message}");
+    }
+
+    fn commands_submitted(&self) {
+        renderer::with(|renderer| renderer.commands_submitted());
     }
 
     fn draw(&self, draw: &Draw) {
@@ -282,7 +286,7 @@ pub(super) fn initialize_ring_buffer(call: &ImportCall) -> u32 {
     info!(target: "video", "ring buffer at physical {base:#010x}, {size:#x} bytes");
     let Some(address) = memory::view_address(base) else {
         status::halt_guest_thread(format!(
-            "ring buffer at physical {base:#010x}, which the title did not allocate"
+            "ring buffer at physical {base:#010x}, past the end of physical memory"
         ));
     };
     COMMAND_PROCESSOR
@@ -312,7 +316,7 @@ pub(super) fn enable_ring_buffer_read_pointer_writeback(call: &ImportCall) -> u3
     let physical = call.argument(0);
     let Some(address) = memory::view_address(physical) else {
         status::halt_guest_thread(format!(
-            "ring buffer read pointer write-back to physical {physical:#010x}, which the title did not allocate"
+            "ring buffer read pointer write-back to physical {physical:#010x}, past the end of physical memory"
         ));
     };
     info!(target: "video", "read pointer written back to physical {physical:#010x} (guest {address:#010x}), block size 2^{}", call.argument(1));
@@ -421,6 +425,11 @@ pub(super) fn swap(call: &ImportCall) -> u32 {
         debug!(target: "video", "frame {frame} presented ({width}x{height}, {draws} draws)");
     }
     NO_RETURN_VALUE
+}
+
+/// How many frames the title has presented: its own clock, which input scripts follow.
+pub fn frames_presented() -> u32 {
+    FRAMES_PRESENTED.load(Ordering::Relaxed)
 }
 
 /// VdSetDisplayMode(mode) -> 0. The display keeps the single mode the runtime reports.
