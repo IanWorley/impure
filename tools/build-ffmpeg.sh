@@ -61,7 +61,14 @@ case "$(uname -s)" in
     # The runtime finds the libraries through its rpath (lib/ beside it), so name them by it.
     Darwin) platform_flags+=(--install-name-dir='@rpath') ;;
     # Under MSYS2 with the MSVC environment loaded: DLLs plus import libraries for the MSVC linker.
-    MINGW* | MSYS*) platform_flags+=(--toolchain=msvc) ;;
+    MINGW* | MSYS*)
+        platform_flags+=(--toolchain=msvc)
+        # MSYS2 runs as x86-64 on Windows on Arm, so configure would detect x86: take the
+        # architecture the MSVC environment targets instead.
+        if [[ "${VSCMD_ARG_TGT_ARCH:-}" == arm64 ]]; then
+            platform_flags+=(--arch=aarch64)
+        fi
+        ;;
 esac
 
 cd "${SOURCE}"
