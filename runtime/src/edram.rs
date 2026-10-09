@@ -140,6 +140,11 @@ pub fn scissor(top_left: u32, bottom_right: u32, window_offset: (i32, i32)) -> R
 }
 
 /// The depth a resolve clears the depth surface to, in the format RB_DEPTH_INFO gives it.
+/// Whether RB_DEPTH_INFO's surface holds 20e4 floats rather than 24-bit unorm depth.
+pub fn depth_is_float(depth_info: u32) -> bool {
+    depth_info & DEPTH_FORMAT_FLOAT != 0
+}
+
 pub fn depth_clear_value(clear: u32, depth_info: u32) -> f32 {
     let depth = clear >> DEPTH_CLEAR_SHIFT;
     if depth_info & DEPTH_FORMAT_FLOAT == 0 {

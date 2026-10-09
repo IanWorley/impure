@@ -6,19 +6,22 @@
 //! memory as raw little-endian words from a second, byte-swapping them as the fetch constant
 //! says, as the console's GPU does. Semantics follow Xenia's `ucode.h`.
 //!
-//! Anything not translated faithfully (texture fetches, for now) is listed in
+//! Anything not translated faithfully (1D and 3D textures, for now) is listed in
 //! [`Translation::unsupported`] so the log says why a draw may look wrong.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 
 use crate::gpu::ShaderStage;
 use crate::shader::{
-    Alu, Condition, ControlFlowKind, Instruction, Program, Source, TextureFetch, VertexFetch,
+    Alu, Condition, ControlFlowKind, FETCH_SET_TEXTURE_LOD, Instruction, Program, Source,
+    TextureFetch, VertexFetch, fetch_opcode,
 };
 
 const TEMPORARY_REGISTERS: u32 = 64;
-const INTERPOLATORS: u32 = 16;
+pub const INTERPOLATORS: u32 = 16;
+/// `pixel_parameters` when the pixel shader gets none.
+pub const NO_PIXEL_PARAMETERS: u32 = u32::MAX;
 const COLOR_TARGETS: u32 = 4;
 /// Pixel shaders read float constants 256-511.
 const FLOAT_CONSTANTS_PER_STAGE: u32 = 256;
@@ -69,7 +72,8 @@ struct Constants {
     index_bits: u32,
     index_endian: u32,
     index_bias: u32,
-    // PA_CL_VTE_CNTL's formats: XY divided by W (1), Z divided by W (2), W is not 1/W (4).
+    // PA_CL_VTE_CNTL's formats: XY divided by W (1), Z divided by W (2), W is not 1/W (4);
+    // and PA_CL_CLIP_CNTL turning clipping off (8), so depth is clamped rather than clipped.
     position_format: u32,
     // Guest position to host clip space: xyz * scale + w * offset.
     position_scale_x: f32,
@@ -80,6 +84,17 @@ struct Constants {
     position_offset_z: f32,
     // Each texture constant's swizzle: three bits per component, a component or 0 (4) or 1 (5).
     texture_swizzles: array<u32, 32>,
+    // RB_COLORCONTROL's alpha test: its comparison (xenos::CompareFunction, 7 when off) and
+    // reference value. Then alpha to coverage: its 2x2 pattern of dither offsets (bits 0-7) and
+    // whether it is on (bit 8). Then log2 of the samples per guest pixel in X (bits 0-1) and Y
+    // (bits 2-3): each host pixel is one guest sample.
+    alpha_function: u32,
+    alpha_reference: f32,
+    alpha_to_mask: u32,
+    sample_shift: u32,
+    // The register the pixel parameters (Xenos ps_param_gen) replace an interpolator in, or
+    // none (all bits set).
+    pixel_parameters: u32,
 }
 @group(0) @binding(0) var<storage, read> constants: Constants;
 @group(0) @binding(1) var<storage, read> memory: array<u32>;
@@ -167,11 +182,79 @@ fn host_position(guest: vec4<f32>) -> vec4<f32> {
     }
     let scale = vec3<f32>(constants.position_scale_x, constants.position_scale_y, constants.position_scale_z);
     let offset = vec3<f32>(constants.position_offset_x, constants.position_offset_y, constants.position_offset_z);
-    return vec4<f32>(position.xyz * scale + position.w * offset, position.w);
+    var host = vec4<f32>(position.xyz * scale + position.w * offset, position.w);
+    // Without clipping, the console clamps depth instead: Direct3D's clears draw at a depth a
+    // rounding error below zero, which the host would clip away entirely.
+    if (constants.position_format & 8u) != 0u && host.w > 0.0 {
+        host.z = clamp(host.z, 0.0, host.w);
+    }
+    return host;
 }
 
 fn address_register(value: f32) -> i32 {
     return i32(clamp(value, -256.0, 255.0));
+}
+
+// Whether colour 0's alpha passes the alpha test and, with alpha to coverage, covers this host
+// pixel's sample. Alpha to coverage covers a sample when alpha reaches its threshold, lowered by
+// the guest pixel's offset in the 2x2 dither pattern (as Xenia does it).
+fn alpha_passes(alpha: f32, host_pixel: vec2<f32>) -> bool {
+    let reference = constants.alpha_reference;
+    var passes = true;
+    switch constants.alpha_function {
+        case 0u: { passes = false; }
+        case 1u: { passes = alpha < reference; }
+        case 2u: { passes = alpha == reference; }
+        case 3u: { passes = alpha <= reference; }
+        case 4u: { passes = alpha > reference; }
+        case 5u: { passes = alpha != reference; }
+        case 6u: { passes = alpha >= reference; }
+        default: {}
+    }
+    if (constants.alpha_to_mask & 0x100u) == 0u {
+        return passes;
+    }
+    let sample = vec2<u32>(host_pixel);
+    let shift = vec2<u32>(constants.sample_shift & 3u, constants.sample_shift >> 2u);
+    let pixel = sample >> shift;
+    let pattern_index = ((pixel.x & 1u) << 1u) | (pixel.y & 1u);
+    let offset = f32((constants.alpha_to_mask >> (2u * pattern_index)) & 3u);
+    var threshold: f32;
+    if shift.x != 0u {
+        let thresholds = array<f32, 4>(0.75, 0.25, 0.5, 1.0);
+        threshold = thresholds[(sample.x & 1u) | ((sample.y & 1u) << 1u)] - offset / 16.0;
+    } else if shift.y != 0u {
+        threshold = select(0.5, 1.0, (sample.y & 1u) != 0u) - offset / 8.0;
+    } else {
+        threshold = 1.0 - offset / 4.0;
+    }
+    return passes && alpha >= threshold;
+}
+
+// A cube fetch's coordinates are what the cube instruction leaves, scaled by the major axis:
+// face coordinates SC and TC from 1 to 2, and the face index. This is the direction they name,
+// turning the axes back the opposite way to `cube` (as Xenia does it).
+fn cube_direction(fetched: vec3<f32>) -> vec3<f32> {
+    let sc = fetched.x * 2.0 - 3.0;
+    let tc = fetched.y * 2.0 - 3.0;
+    let face = u32(clamp(fetched.z, 0.0, 5.0));
+    let negative = (face & 1u) != 0u;
+    let major = select(1.0, -1.0, negative);
+    switch face >> 1u {
+        case 0u: { return vec3<f32>(major, -tc, select(-sc, sc, negative)); }
+        case 1u: { return vec3<f32>(sc, major, select(tc, -tc, negative)); }
+        default: { return vec3<f32>(select(sc, -sc, negative), -tc, major); }
+    }
+}
+
+// The pixel parameters, as Xenia gives them: the guest pixel's position, whole, in X and Y
+// (vPos), with X's sign bit set for back faces. Points and lines are not told apart (Z and W
+// are zero).
+fn pixel_parameters(position: vec2<f32>, front_facing: bool) -> vec4<f32> {
+    let shift = vec2<u32>(constants.sample_shift & 3u, constants.sample_shift >> 2u);
+    let pixel = vec2<f32>(vec2<u32>(position) >> shift);
+    let x = bitcast<f32>(bitcast<u32>(pixel.x) | select(0x80000000u, 0u, front_facing));
+    return vec4<f32>(x, pixel.y, 0.0, 0.0);
 }
 
 // cube: face coordinates of the direction (x, y, z), read as source 0 .zzxy and source 1 .yxzz.
@@ -217,13 +300,21 @@ impl VertexEntry {
     }
 }
 
+/// How a shader samples a texture constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureDimension {
+    TwoD,
+    /// Six square faces, sampled by direction.
+    Cube,
+}
+
 /// A translated shader.
 pub struct Translation {
     pub wgsl: String,
     /// What the WGSL does not reproduce, one entry per kind.
     pub unsupported: BTreeSet<String>,
-    /// The 2D texture constants it samples.
-    pub textures: BTreeSet<u32>,
+    /// The texture constants it samples, and how.
+    pub textures: BTreeMap<u32, TextureDimension>,
 }
 
 /// Checks WGSL the way wgpu will before creating a pipeline.
@@ -240,27 +331,29 @@ pub fn validate(wgsl: &str) -> Result<(), String> {
 
 pub fn translate(stage: ShaderStage, words: &[u32]) -> Translation {
     let program = Program::decode(words);
-    let textures = program
-        .instructions
-        .iter()
-        .filter_map(|(_, instruction)| match instruction {
-            Instruction::TextureFetch(fetch) if fetch.dimension() == DIMENSION_2D => {
-                Some(fetch.constant())
-            }
-            _ => None,
-        })
-        .collect();
+    // A constant's first fetch decides how it is bound; fetches sampling it another way read
+    // white (see `texture_fetch`).
+    let mut textures = BTreeMap::new();
+    for (_, instruction) in &program.instructions {
+        if let Instruction::TextureFetch(fetch) = instruction
+            && let Some(dimension) = texture_dimension(fetch.dimension())
+        {
+            textures.entry(fetch.constant()).or_insert(dimension);
+        }
+    }
     let mut translator = Translator {
         stage,
         code: String::new(),
         unsupported: BTreeSet::new(),
+        writes_color_0: false,
+        textures: textures.clone(),
         instructions: program.instructions.iter().copied().collect(),
         scalar_registers: !program
             .instructions
             .iter()
             .any(|(_, instruction)| indexes_registers_relatively(*instruction)),
     };
-    translator.translate(&program.control_flow, &textures);
+    translator.translate(&program.control_flow);
     Translation {
         wgsl: translator.code,
         unsupported: translator.unsupported,
@@ -284,6 +377,10 @@ struct Translator {
     code: String,
     unsupported: BTreeSet<String>,
     instructions: HashMap<u32, Instruction>,
+    /// Whether a pixel shader exports colour 0, which the alpha test reads.
+    writes_color_0: bool,
+    /// How each texture constant is bound.
+    textures: BTreeMap<u32, TextureDimension>,
     /// Registers are separate variables (`r0`, `r1`, ...) unless something indexes them
     /// relative to aL, which needs an array. Separate variables are much easier for GPU
     /// compilers to keep in registers.
@@ -291,13 +388,17 @@ struct Translator {
 }
 
 impl Translator {
-    fn translate(&mut self, control_flow: &[ControlFlowKind], textures: &BTreeSet<u32>) {
+    fn translate(&mut self, control_flow: &[ControlFlowKind]) {
         self.code.push_str(CONSTANTS_LAYOUT);
         self.code.push_str(HELPERS);
-        for constant in textures {
+        for (&constant, &dimension) in &self.textures.clone() {
+            let texture_type = match dimension {
+                TextureDimension::TwoD => "texture_2d<f32>",
+                TextureDimension::Cube => "texture_cube<f32>",
+            };
             emit!(
                 self,
-                "@group(1) @binding({}) var texture{constant}: texture_2d<f32>;",
+                "@group(1) @binding({}) var texture{constant}: {texture_type};",
                 constant * 2
             );
             emit!(
@@ -426,6 +527,7 @@ impl Translator {
             ShaderStage::Pixel => {
                 emit!(self, "struct FragmentInput {{");
                 emit!(self, "    @builtin(position) position: vec4<f32>,");
+                emit!(self, "    @builtin(front_facing) front_facing: bool,");
                 interpolators(&mut self.code, "");
                 emit!(self, "}}");
                 emit!(self, "struct FragmentOutput {{");
@@ -454,6 +556,7 @@ impl Translator {
         emit!(self, "    var call_return: array<u32, {CALL_DEPTH}>;");
         emit!(self, "    var call_depth: u32 = 0u;");
         emit!(self, "    var vfetch_address: i32 = 0;");
+        emit!(self, "    var texture_lod: f32 = 0.0;");
         match self.stage {
             ShaderStage::Vertex => {
                 // The vertex index arrives in r0.x.
@@ -476,6 +579,17 @@ impl Translator {
                         self.temporary(index)
                     );
                 }
+                // The pixel parameters replace one interpolator, if the draw asks for them.
+                emit!(self, "    switch constants.pixel_parameters {{");
+                for index in 0..INTERPOLATORS {
+                    emit!(
+                        self,
+                        "        case {index}u: {{ {} = pixel_parameters(input.position.xy, input.front_facing); }}",
+                        self.temporary(index)
+                    );
+                }
+                emit!(self, "        default: {{}}");
+                emit!(self, "    }}");
                 emit!(
                     self,
                     "    var out_colors: array<vec4<f32>, {COLOR_TARGETS}>;"
@@ -501,6 +615,13 @@ impl Translator {
                 return;
             }
             ShaderStage::Pixel => {
+                // The alpha test reads colour 0, so a shader that writes none skips it.
+                if self.writes_color_0 {
+                    emit!(
+                        self,
+                        "    if !alpha_passes(out_colors[0].w, input.position.xy) {{ discard; }}"
+                    );
+                }
                 emit!(self, "    var output: FragmentOutput;");
                 for index in 0..COLOR_TARGETS {
                     emit!(self, "    output.color{index} = out_colors[{index}];");
@@ -624,7 +745,8 @@ impl Translator {
             Instruction::Alu(alu) => alu.predicate(),
             Instruction::VertexFetch(fetch) => fetch.predicate(),
             Instruction::TextureFetch(fetch) => fetch.predicate(),
-            Instruction::OtherFetch(_) => None,
+            // Other fetches share the texture fetch's predicate fields.
+            Instruction::OtherFetch(words) => TextureFetch(words).predicate(),
         };
         match predicate {
             Some(expected) => emit!(self, "if p == {expected} {{"),
@@ -634,9 +756,19 @@ impl Translator {
             Instruction::Alu(alu) => self.alu(alu),
             Instruction::VertexFetch(fetch) => self.vertex_fetch(fetch),
             Instruction::TextureFetch(fetch) => self.texture_fetch(fetch),
+            Instruction::OtherFetch(words) if fetch_opcode(words) == FETCH_SET_TEXTURE_LOD => {
+                // Its source is a texture fetch's: the level is the first coordinate.
+                let fetch = TextureFetch(words);
+                emit!(
+                    self,
+                    "texture_lod = {}.{};",
+                    self.temporary(fetch.source_register()),
+                    COMPONENTS[(fetch.source_swizzle() & 0b11) as usize]
+                );
+            }
             Instruction::OtherFetch(words) => {
                 self.unsupported
-                    .insert(format!("fetch opcode {}", words[0] & 0x1F));
+                    .insert(format!("fetch opcode {}", fetch_opcode(words)));
             }
         }
         emit!(self, "}}");
@@ -898,7 +1030,10 @@ impl Translator {
                 Some(format!("out_interpolators[{register}]"))
             }
             (ShaderStage::Vertex, EXPORT_POSITION) => Some("out_position".into()),
-            (ShaderStage::Pixel, 0..COLOR_TARGETS) => Some(format!("out_colors[{register}]")),
+            (ShaderStage::Pixel, 0..COLOR_TARGETS) => {
+                self.writes_color_0 |= register == 0;
+                Some(format!("out_colors[{register}]"))
+            }
             (ShaderStage::Vertex, EXPORT_POINT_SIZE) => {
                 self.unsupported.insert("point size export".into());
                 None
@@ -1034,10 +1169,12 @@ impl Translator {
         }
     }
 
-    /// Samples a 2D texture at its base level, then applies the fetch constant's swizzle.
-    /// Other dimensions return opaque white so geometry still shows.
+    /// Samples a 2D or cube texture at its base level, then applies the fetch constant's
+    /// swizzle. Other dimensions return opaque white so geometry still shows.
     fn texture_fetch(&mut self, fetch: TextureFetch) {
-        if fetch.dimension() != DIMENSION_2D {
+        let constant = fetch.constant();
+        let dimension = texture_dimension(fetch.dimension());
+        if dimension.is_none() || dimension != self.textures.get(&constant).copied() {
             self.unsupported.insert(format!(
                 "texture dimension {} (returns white)",
                 fetch.dimension()
@@ -1049,25 +1186,56 @@ impl Translator {
             );
             return;
         }
-        let constant = fetch.constant();
         let source = self.temporary(fetch.source_register());
         let coordinate =
             |index: u32| COMPONENTS[((fetch.source_swizzle() >> (2 * index)) & 0b11) as usize];
-        emit!(
-            self,
-            "var coordinates = vec2<f32>({source}.{}, {source}.{});",
-            coordinate(0),
-            coordinate(1)
-        );
-        if fetch.unnormalized_coordinates() {
+        let (offset_x, offset_y) = fetch.offsets();
+        if dimension == Some(TextureDimension::Cube) {
+            if (offset_x, offset_y) != (0.0, 0.0) {
+                self.unsupported.insert("cube texture fetch offsets".into());
+            }
             emit!(
                 self,
-                "coordinates /= vec2<f32>(textureDimensions(texture{constant}));"
+                "let coordinates = cube_direction(vec3<f32>({source}.{}, {source}.{}, {source}.{}));",
+                coordinate(0),
+                coordinate(1),
+                coordinate(2)
             );
+        } else {
+            emit!(
+                self,
+                "var coordinates = vec2<f32>({source}.{}, {source}.{});",
+                coordinate(0),
+                coordinate(1)
+            );
+            // Offsets are in texels, so they are added before texel coordinates are normalized.
+            if (offset_x, offset_y) != (0.0, 0.0) {
+                let size = if fetch.unnormalized_coordinates() {
+                    String::new()
+                } else {
+                    format!(" / vec2<f32>(textureDimensions(texture{constant}))")
+                };
+                emit!(
+                    self,
+                    "coordinates += vec2<f32>({offset_x:?}, {offset_y:?}){size};"
+                );
+            }
+            if fetch.unnormalized_coordinates() {
+                emit!(
+                    self,
+                    "coordinates /= vec2<f32>(textureDimensions(texture{constant}));"
+                );
+            }
         }
+        let base_level = if fetch.uses_register_lod() {
+            "texture_lod"
+        } else {
+            "0.0"
+        };
         emit!(
             self,
-            "let texel = swizzle_texel(textureSampleLevel(texture{constant}, sampler{constant}, coordinates, 0.0), constants.texture_swizzles[{constant}]);"
+            "let texel = swizzle_texel(textureSampleLevel(texture{constant}, sampler{constant}, coordinates, {base_level} + {:?}), constants.texture_swizzles[{constant}]);",
+            fetch.lod_bias()
         );
         self.fetch_writes(fetch.dest_register(), fetch.dest_swizzle(), "texel");
     }
@@ -1095,7 +1263,18 @@ impl Translator {
     }
 }
 
+/// A texture fetch's dimension field (xenos::FetchOpDimension).
 const DIMENSION_2D: u32 = 1;
+const DIMENSION_CUBE: u32 = 3;
+
+/// How the host binds a fetch's dimension, if it can.
+fn texture_dimension(dimension: u32) -> Option<TextureDimension> {
+    match dimension {
+        DIMENSION_2D => Some(TextureDimension::TwoD),
+        DIMENSION_CUBE => Some(TextureDimension::Cube),
+        _ => None,
+    }
+}
 
 /// Whether an instruction addresses temporary registers relative to aL.
 fn indexes_registers_relatively(instruction: Instruction) -> bool {
@@ -1485,22 +1664,62 @@ mod tests {
         assert!(translation.wgsl.contains("} else {"));
     }
 
-    #[test]
-    fn texture_fetches_bind_their_constant() {
+    /// A texture fetch of constant 5 into r1, in the given dimension.
+    fn texture_fetch(dimension: u32) -> [u32; 3] {
         const TEXTURE_FETCH: u32 = 1;
         const CONSTANT: u32 = 5;
-        const DIMENSION_2D_BITS: u32 = DIMENSION_2D << 14;
-        let fetch = [
+        const DIMENSION_SHIFT: u32 = 14;
+        [
             TEXTURE_FETCH | (1 << 12) | (CONSTANT << 20),
             0b011_010_001_000,
-            DIMENSION_2D_BITS,
-        ];
-        let words = shader(&[exec(CF_EXEC_END, 1, 1, 0b01)], &[fetch]);
+            dimension << DIMENSION_SHIFT,
+        ]
+    }
+
+    #[test]
+    fn texture_fetches_bind_their_constant() {
+        for (dimension, bound, binding) in [
+            (DIMENSION_2D, TextureDimension::TwoD, "texture_2d<f32>"),
+            (DIMENSION_CUBE, TextureDimension::Cube, "texture_cube<f32>"),
+        ] {
+            let words = shader(
+                &[exec(CF_EXEC_END, 1, 1, 0b01)],
+                &[texture_fetch(dimension)],
+            );
+            let translation = assert_valid(ShaderStage::Pixel, &words);
+            assert_eq!(
+                translation.textures.into_iter().collect::<Vec<_>>(),
+                [(5, bound)]
+            );
+            assert!(translation.wgsl.contains(binding));
+            assert!(
+                translation.unsupported.is_empty(),
+                "{:?}",
+                translation.unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn set_texture_lod_and_fetch_offsets_are_translated() {
+        const SET_TEXTURE_LOD: u32 = 24;
+        const SOURCE_R2_Z: u32 = (2 << 5) | (0b10_10_10 << 26);
+        const USE_REGISTER_LOD: u32 = 1 << 29;
+        // Offset X is -2 half texels, in five signed bits from bit 16.
+        const OFFSET_X_MINUS_ONE_TEXEL: u32 = 0b11110 << 16;
+        let set_lod = [SET_TEXTURE_LOD | SOURCE_R2_Z, 0, 0];
+        let mut fetch = texture_fetch(DIMENSION_2D);
+        fetch[1] |= USE_REGISTER_LOD;
+        fetch[2] |= OFFSET_X_MINUS_ONE_TEXEL;
+        let words = shader(&[exec(CF_EXEC_END, 1, 2, 0b0101)], &[set_lod, fetch]);
         let translation = assert_valid(ShaderStage::Pixel, &words);
-        assert_eq!(
-            translation.textures.into_iter().collect::<Vec<_>>(),
-            [CONSTANT]
+        assert!(translation.wgsl.contains("texture_lod = r2.z;"));
+        assert!(
+            translation
+                .wgsl
+                .contains("coordinates += vec2<f32>(-1.0, 0.0)")
         );
+        assert!(translation.wgsl.contains("coordinates, texture_lod + 0.0)"));
         assert!(
             translation.unsupported.is_empty(),
             "{:?}",

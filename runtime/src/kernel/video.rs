@@ -30,8 +30,10 @@ static COMMAND_PROCESSOR: LazyLock<Mutex<CommandProcessor>> =
 /// Draws issued since the last VdSwap, and in the frame before it.
 static DRAWS_THIS_FRAME: AtomicU32 = AtomicU32::new(0);
 static DRAWS_LAST_FRAME: AtomicU32 = AtomicU32::new(0);
-/// Loaded shaders whose WGSL translation passes validation.
+/// Loaded shaders whose WGSL translation passes validation, and those of them that translate
+/// everything they do.
 static VALID_SHADERS: AtomicU32 = AtomicU32::new(0);
+static FULLY_TRANSLATED_SHADERS: AtomicU32 = AtomicU32::new(0);
 static COMMAND_PROCESSOR_STARTED: Once = Once::new();
 /// The title's graphics interrupt callback and its user data.
 static INTERRUPT_CALLBACK: Mutex<Option<(u32, u32)>> = Mutex::new(None);
@@ -101,8 +103,13 @@ impl command_processor::Environment for KernelEnvironment {
         match translate::validate(&translation.wgsl) {
             Ok(()) => {
                 VALID_SHADERS.fetch_add(1, Ordering::Relaxed);
-                debug!(target: "shader", "{stage:?} shader {:016x}: valid WGSL, not translated: {:?}",
-                    shader.hash, translation.unsupported);
+                if translation.unsupported.is_empty() {
+                    FULLY_TRANSLATED_SHADERS.fetch_add(1, Ordering::Relaxed);
+                    debug!(target: "shader", "{stage:?} shader {:016x}: valid WGSL", shader.hash);
+                } else {
+                    info!(target: "shader", "{stage:?} shader {:016x}: valid WGSL, not translated: {:?}",
+                        shader.hash, translation.unsupported);
+                }
             }
             Err(error) => {
                 warn!(target: "shader", "{stage:?} shader {:016x}: invalid WGSL: {error}", shader.hash)
@@ -420,7 +427,8 @@ pub(super) fn swap(call: &ImportCall) -> u32 {
     } else if frame.is_multiple_of(FRAMES_PER_PROGRESS_LINE) {
         let shaders = COMMAND_PROCESSOR.lock().unwrap().shader_count();
         let valid = VALID_SHADERS.load(Ordering::Relaxed);
-        info!(target: "video", "{frame} frames presented ({draws} draws in the last, {shaders} distinct shaders loaded, {valid} valid as WGSL)");
+        let complete = FULLY_TRANSLATED_SHADERS.load(Ordering::Relaxed);
+        info!(target: "video", "{frame} frames presented ({draws} draws in the last, {shaders} distinct shaders loaded, {valid} valid as WGSL, {complete} fully translated)");
     } else {
         debug!(target: "video", "frame {frame} presented ({width}x{height}, {draws} draws)");
     }
