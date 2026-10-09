@@ -839,11 +839,9 @@ pub fn read_registers(memory: &GuestMemory, first: u32, destination: &mut [u32])
     );
     let mut bytes = vec![0; destination.len() * WORD_SIZE as usize];
     memory.read_bytes(register_address(first), &mut bytes);
-    for (word, bytes) in destination
-        .iter_mut()
-        .zip(bytes.chunks_exact(WORD_SIZE as usize))
-    {
-        *word = u32::from_be_bytes(bytes.try_into().unwrap());
+    let (words, _) = bytes.as_chunks::<{ WORD_SIZE as usize }>();
+    for (word, bytes) in destination.iter_mut().zip(words) {
+        *word = u32::from_be_bytes(*bytes);
     }
 }
 

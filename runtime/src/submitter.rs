@@ -18,6 +18,8 @@ use bevy::log::{info, warn};
 use crate::renderer::words_as_bytes;
 
 const THREAD_NAME: &str = "gpu-submit";
+/// Every format a readback saves has 4-byte texels: RGBA8, or one 32-bit float.
+const TEXEL_BYTES: usize = 4;
 
 /// Work for the queue, in the order the renderer recorded it.
 pub enum Work {
@@ -64,7 +66,7 @@ impl Readback {
         let bytes_per_texel = match format {
             wgpu::TextureFormat::Rgba8Unorm
             | wgpu::TextureFormat::Rgba8UnormSrgb
-            | wgpu::TextureFormat::R32Float => 4,
+            | wgpu::TextureFormat::R32Float => TEXEL_BYTES as u32,
             _ => return None,
         };
         let size = (texture.width(), texture.height());
@@ -111,14 +113,14 @@ impl Readback {
         let rows: Vec<Vec<u8>> = slice
             .get_mapped_range()
             .chunks(self.padded_row_bytes as usize)
-            .map(|row| row[..(width * 4) as usize].to_vec())
+            .map(|row| row[..width as usize * TEXEL_BYTES].to_vec())
             .collect();
         let mut range = String::new();
         let rgb: Vec<u8> = if self.format == wgpu::TextureFormat::R32Float {
             let values: Vec<f32> = rows
                 .iter()
-                .flat_map(|row| row.chunks_exact(4))
-                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .flat_map(|row| row.as_chunks::<TEXEL_BYTES>().0)
+                .map(|bytes| f32::from_le_bytes(*bytes))
                 .collect();
             let finite = values.iter().copied().filter(|value| value.is_finite());
             let low = finite.clone().fold(f32::INFINITY, f32::min);
@@ -136,7 +138,9 @@ impl Readback {
         } else {
             rows.iter()
                 .flat_map(|row| {
-                    row.chunks_exact(4)
+                    row.as_chunks::<TEXEL_BYTES>()
+                        .0
+                        .iter()
                         .flat_map(|texel| [texel[0], texel[1], texel[2]])
                 })
                 .collect()
