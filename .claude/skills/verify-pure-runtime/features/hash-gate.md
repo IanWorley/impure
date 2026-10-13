@@ -18,10 +18,11 @@ Preconditions:
 
 - A scratch data directory, so nothing is remembered in the user's: `export PURE_DATA_DIR=$(mktemp -d /tmp/pure-hash.XXXXXX)`.
 
-- **Wrong file.** Run `bad=$(mktemp /tmp/not-pure.XXXXXX.xex); head -c 4096 /dev/urandom > "$bad"; .claude/skills/verify-pure-runtime/scripts/run.sh hash-gate "$bad"; rm -f "$bad"`. `summary.txt` stop line reads `<path> is not the copy of Pure this runtime supports: its executable's SHA-256 is <hash>, and the runtime needs the World release with no title update (83c52e15…f33c).`, with `window: present`.
+- **Wrong file.** Run `bad=/tmp/not-pure-$$.xex; head -c 4096 /dev/urandom > "$bad"; .claude/skills/verify-pure-runtime/scripts/run.sh hash-gate "$bad"; rm -f "$bad"` (macOS's `mktemp` only randomises trailing `X`s, so a `.xex` template would be used literally). `summary.txt` stop line reads `<path> is not the copy of Pure this runtime supports: its executable's SHA-256 is <hash>, and the runtime needs the World release with no title update (<expected hash>).`, both hashes in full (64 hex digits), with `window: present`.
 - **Nothing loaded.** `grep -c 'entry point\|import:' runtime.log` prints `0`.
 - **Not a disc image.** As above with `head -c 200000 /dev/urandom > /tmp/not-pure.iso`: the stop line is `/tmp/not-pure.iso is not an Xbox disc image`.
-- **Missing file.** Run `.claude/skills/verify-pure-runtime/scripts/run.sh hash-missing /tmp/does-not-exist.xex`. The stop line names the path and the read error, and no `entry point` line appears.
+- **Missing file.** Run `.claude/skills/verify-pure-runtime/scripts/run.sh hash-missing /tmp/does-not-exist.xex`. The stop line is `/tmp/does-not-exist.xex: No such file or directory (os error 2)`, and no `entry point` line appears.
+- **Nothing remembered.** `ls -A "$PURE_DATA_DIR"` is empty after the refusals: `last-game` is written only once a game is prepared.
 
 ## Gotchas
 

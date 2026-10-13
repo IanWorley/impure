@@ -1,5 +1,6 @@
-# Boot to the tutorial and ride: Return through the start-up screens, Start (Escape) at the title
-# screen, Return through the save dialog and menus. The tutorial then shows instructions that A
+# Boot to the tutorial and ride: Return through the start-up screens, the title screen and the save
+# dialogs (creating a save when there is none). The Escape at frame 3,420 opens the tutorial's
+# pause menu, which the next Return resumes. The tutorial then shows instructions that A
 # dismisses and one that waits for a fresh pull of the throttle; when each appears depends on
 # the frame rate. So from frame 3,610 the script holds the throttle (W), and every 150 frames
 # eases off it, taps Return, and pulls it again. A frame capture before each menu press and
