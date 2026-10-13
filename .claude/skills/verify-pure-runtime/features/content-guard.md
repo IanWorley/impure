@@ -1,13 +1,13 @@
 # Content guard
 
-`tools/check-no-game-content.sh` fails when the Git index contains anything that looks like game data or generated code: forbidden names (disc images, executables, media, objects and libraries, XenonRecomp output names, `originals/` or `local/`), XenonRecomp function bodies or function names in file contents, the `XEX2` magic at the start of any file, or a file over 2 MiB. The hand-written title fixes in `runtime/cpp/patches.cpp` may name the recompiled functions they wrap, so the function-name check skips that file. CI runs it on every push to `main` and every pull request.
+`tools/check-no-game-content.sh` fails when the Git index contains anything that looks like game data or generated code: forbidden names (disc images, executables, media, objects and libraries, XenonRecomp output names, `originals/` or `local/`), XenonRecomp function bodies or function names in file contents, the `XEX2` magic at the start of any file, or a file over 2 MiB. The hand-written title fixes in `runtime/cpp/patches.cpp` may name the recompiled functions they wrap, so the function-name check skips that file; the guard skips itself in both content checks, since it spells out the patterns. CI runs it on every push to `main` and every pull request.
 
 ## Sub-features
 
 - `guard-clean` prints `No game content tracked.` and exits 0 on the real repo.
 - `guard-name` rejects forbidden file names.
 - `guard-content` rejects generated-code markers and `XEX2`-magic files whatever their names.
-- `guard-title-fixes` lets `runtime/cpp/patches.cpp`, and no other file, name a recompiled function.
+- `guard-title-fixes` lets `runtime/cpp/patches.cpp` name a recompiled function, and no other file but the guard itself (`SELF_PATHSPEC`), which neither content check reads.
 - `guard-size` rejects files over 2 MiB.
 
 ## How to get to it (user POV)

@@ -1,6 +1,6 @@
 # Audio
 
-Built with the `audio` feature (`cargo build --release --features audio`, which needs FFmpeg's development files), the runtime plays the game's sound. FFmpeg decodes the title's XMA streams, the title's own mixer submits frames of 256 six-channel samples, and the runtime downmixes them to stereo (leaving out the LFE channel) and plays them on the host's default output device at the console's 48 kHz. `PURE_AUDIO_CAPTURE=<file.wav>` also records what plays (48 kHz stereo, 16-bit), so a run can be judged without listening. Without the feature the title still submits its frames, and they are dropped: the game runs silent.
+Built with the `audio` feature (`cargo build --release --features audio`, which needs FFmpeg's development files, found with `pkg-config`, and on Linux ALSA's, `libasound2-dev`), the runtime plays the game's sound. FFmpeg decodes the title's XMA streams, the title's own mixer submits frames of 256 six-channel samples, and the runtime downmixes them to stereo (leaving out the LFE channel) and plays them on the host's default output device at the console's 48 kHz. `PURE_AUDIO_CAPTURE=<file.wav>` also records what plays (48 kHz stereo, 16-bit), so a run can be judged without listening. Without the feature the title still submits its frames, and they are dropped: the game runs silent.
 
 ## Sub-features
 
@@ -21,7 +21,7 @@ Preconditions:
 - Python 3 with NumPy for the analysis below.
 
 - **Capture.** Add `PURE_AUDIO_CAPTURE=/tmp/pure-audio.wav` to the tutorial run in [rendering.md](./rendering.md) (or any run that gets past the start-up screens). `runtime.log` shows `audio: first audio frame submitted`, `audio: capturing audio to /tmp/pure-audio.wav`, `audio: playing through the default output device at 48000 Hz`, and `xma: … passes decoded … frames` lines every 10 seconds.
-- **Judge it.** Read the WAV with Python's `wave` module, average the channels, and per second compute the RMS and, for seconds with RMS above 0.01, the spectral flatness (geometric over arithmetic mean of the Hann-windowed power spectrum). Real music and effects stay under about 0.3; decoding gone wrong is noise near 0.5 to 0.9 with energy around 10 kHz. On an M4 the tutorial run is audible for 360 of its 399 seconds (median RMS 0.15) with a median flatness of 0.010 and a maximum of 0.066. Keep the numbers in the evidence directory and delete the WAV: it is the game's sound.
+- **Judge it.** Read the WAV with Python's `wave` module, convert its little-endian 16-bit samples to floats in -1 to 1 (`numpy.frombuffer(…, dtype='<i2') / 32768`), average the channels, and per second compute the RMS and, for seconds with RMS above 0.01, the spectral flatness (geometric over arithmetic mean of the Hann-windowed power spectrum). Real music and effects stay under about 0.3; decoding gone wrong is noise near 0.5 to 0.9 with energy around 10 kHz. On an M4 the tutorial run is audible for 360 of its 399 seconds (median RMS 0.15) with a median flatness of 0.010 and a maximum of 0.066. Keep the numbers in the evidence directory and delete the WAV: it is the game's sound.
 - **Stereo streams.** `VERIFY_RUST_LOG=info,xma=debug` logs `a stream its context calls 1-channel decodes as 2-channel` as such streams are found.
 
 ## Gotchas
