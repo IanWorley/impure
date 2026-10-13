@@ -33,6 +33,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Boot to the main loop](./boot.md): the game boots, loads its assets and runs its main loop at 60 frames per second; covers stop lines and `--exit-on-stop`.
 - [Keyboard input](./input.md): the host keyboard (or an `--input-script`) drives controller 0 through a binding table, and the game reacts.
 - [Rendering](./rendering.md): shaders translated to WGSL, draws run through wgpu, and the game's start-up screens shown in the window.
+- [Audio](./audio.md): with the `audio` feature, the game's XMA streams are decoded with FFmpeg and its mixed frames play on the default output device, and can be captured to a WAV file.
 - [Save games](./saves.md): the game creates, writes and reloads its save package in the runtime's data directory.
 - [Executable hash gate](./hash-gate.md): the runtime refuses any executable but the recorded one.
 - [Launcher](./launcher.md): with no game, the window asks for one in the system's Open dialog, shows preparation and failures, and remembers the last game.
