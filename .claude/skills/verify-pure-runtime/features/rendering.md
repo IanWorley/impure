@@ -6,7 +6,7 @@ Not reproduced yet, each reported once in the log as `WARN renderer: not reprodu
 
 - render target formats other than 8-bit RGBA and 32-bit float (`render target format N`), and resolves to them (`resolves to format N`);
 - blending into render targets the host cannot blend (`blending into Rgba32Float render targets`), and blend controls with no host equivalent (`blend control 0x…`);
-- texture formats the decoder lacks (`texture format N`), primitive types with no host equivalent (`primitive type 0x…`), and draws reading more guest memory than a batch holds;
+- texture formats the decoder lacks (`texture format N`), textures past the end of physical memory, primitive types with no host equivalent (`primitive type 0x…`), and draws reading more guest memory than a batch holds;
 - a GPU error in a recorded pass (`… failed: <error>`).
 
 Resolved textures are never written back to guest memory, so a title reading them with the CPU would not see them; that is not logged.

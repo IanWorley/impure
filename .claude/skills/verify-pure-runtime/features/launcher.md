@@ -8,7 +8,7 @@ Started without a game on the command line, the runtime opens its window on a ho
 - `launcher-dialog` opens the system's Open dialog from the button and prepares the chosen file.
 - `launcher-remembered` offers the last game prepared, with Play, without starting it.
 - `launcher-failure` shows a preparation failure in the window and logs it as the stop line.
-- `launcher-usage` prints the usage line and exits with code 2 for an unknown flag, a second game, or `--build-game` with no game.
+- `launcher-usage` prints the usage line and exits with code 2 for an unknown flag, a second game, or `--build-game` with no game named and none remembered (or with `--choose`); with a remembered game, `--build-game` alone prepares that one.
 
 ## How to get to it (user POV)
 
@@ -23,9 +23,9 @@ Preconditions:
 - A scratch data directory, so the user's remembered game is not used or changed: `export PURE_DATA_DIR=$(mktemp -d /tmp/pure-launcher.XXXXXX)`.
 
 - **Window.** Run `VERIFY_RUN_SECONDS=8 .claude/skills/verify-pure-runtime/scripts/run.sh launcher --choose`. `summary.txt` shows `outcome: still running after 8s` and `window: present`; `runtime.log` has no `ERROR` or `prepare` line.
-- **Remembered game.** After any run that prepared the game with this `PURE_DATA_DIR` (`--build-game` is enough), `cat "$PURE_DATA_DIR/last-game"` names what was chosen, as an absolute path (the `.iso`, not the copied `default.xex`). Without the game, write any existing file's absolute path there instead: the home screen only checks that it is a file. Run the window again with no game argument and `VERIFY_RUN_SECONDS=8`: `still running after 8s` and no `prepare` or `entry point` line, because the home screen waits for Play.
+- **Remembered game.** After any run that prepared the game with this `PURE_DATA_DIR` (`--build-game` is enough), `cat "$PURE_DATA_DIR/last-game"` names what was chosen, as an absolute path (the `.iso`, not the copied `default.xex`). Without the game, write any existing file's absolute path there instead, with no trailing newline (`printf '%s' "$PWD/originals/disc/default.xex" > "$PURE_DATA_DIR/last-game"`; `echo` adds one and the path no longer names a file): the home screen only checks that it is a file. Run the window again with no game argument and `VERIFY_RUN_SECONDS=8`: `still running after 8s` and no `prepare` or `entry point` line, because the home screen waits for Play.
 - **Failure.** See the hash gate (`hash-gate.md`): each refusal there is a launcher failure, with `window: present`.
-- **Usage.** Run `"$PURE_RUNTIME_BINARY" --bogus; echo "exit $?"`, then the same with `a.xex b.xex`: the usage line (`usage: pure-runtime [<disc image (.iso) or default.xex>] …`) on stderr, exit `2`. With `--build-game` alone it first prints `--build-game needs a disc image or default.xex`.
+- **Usage.** Run `"$PURE_RUNTIME_BINARY" --bogus; echo "exit $?"`, then the same with `a.xex b.xex`: the usage line (`usage: pure-runtime [<disc image (.iso) or default.xex>] …`) on stderr, exit `2`. With `--build-game` alone and an empty data directory it first prints `--build-game needs a disc image or default.xex`.
 - **Dialog.** The click itself needs a person (or accessibility permission this session lacks): ask the user to click the button and choose their disc image, and confirm from `runtime.log` that `prepare: Reading your disc image` follows (`prepare: Checking your copy of the game` for a `default.xex`). Everything after the click is the same path `pure-runtime <image>` takes, which `game-library.md` proves.
 
 ## Gotchas
