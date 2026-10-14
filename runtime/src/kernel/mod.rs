@@ -10,6 +10,7 @@ mod content;
 mod files;
 mod input;
 mod irql;
+mod keyboard;
 mod memory;
 mod network;
 mod notify;
@@ -62,6 +63,7 @@ enum KernelObject {
 }
 
 pub use files::mount_disc;
+pub use keyboard::{KeyboardPrompt, finish_keyboard, keyboard_prompt};
 pub use threads::start_main_thread;
 pub use video::frames_presented;
 
@@ -322,6 +324,7 @@ fn handler(name: &str) -> Option<ImportHandler> {
         "XamInputSetState" => Word(input::set_state),
         "XamNotifyCreateListener" => Word(notify::create_listener),
         "XamShowDeviceSelectorUI" => Word(content::show_device_selector_ui),
+        "XamShowKeyboardUI" => Word(keyboard::show_keyboard_ui),
         "XamUserCheckPrivilege" => Word(user::check_privilege),
         "XamUserGetName" => Word(user::get_name),
         "XamUserGetSigninInfo" => Word(user::get_signin_info),

@@ -32,4 +32,5 @@ Preconditions:
 
 - Without a window manager, `xdotool windowactivate` fails; `windowfocus --sync` works.
 - `xdotool key` sends press and release back to back, which a 60 Hz game can miss; hold the key with `keydown`, a short sleep, and `keyup`.
+- While the game's on-screen keyboard is up, keys type into its dialog instead of driving the controller (see [keyboard.md](./keyboard.md)).
 - The run's display is only known once `summary.txt` exists; never send keys to a display this run did not create.

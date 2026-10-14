@@ -9,6 +9,7 @@ use bevy::log::{debug, info};
 
 use super::{HANDLES, ImportCall, KernelObject, NO_RETURN_VALUE, NtStatus, read_ansi_string};
 use crate::dispatcher::{self, Dispatcher, DispatcherError, ObjectType, WaitOutcome};
+use crate::memory::GuestMemory;
 use crate::{guest, status, time};
 
 pub(super) static DISPATCHER: Dispatcher = Dispatcher::new();
@@ -90,9 +91,9 @@ pub(super) fn nt_set_event(call: &ImportCall) -> u32 {
 
 /// Signals the event a handle names, for imports that report completion through one.
 /// Handles that do not name a waitable object are ignored, as the console does.
-pub(super) fn signal_event(call: &ImportCall, handle: u32) {
+pub(super) fn signal_event(memory: &GuestMemory, handle: u32) {
     if let Some(event) = resolve(handle) {
-        DISPATCHER.set_signaled(call.memory, event, true);
+        DISPATCHER.set_signaled(memory, event, true);
     }
 }
 

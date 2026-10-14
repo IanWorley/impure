@@ -358,7 +358,7 @@ impl Transfer {
         call.memory
             .write_u32(self.io_status + IO_STATUS_INFORMATION, transferred);
         if self.event != 0 {
-            objects::signal_event(call, self.event);
+            objects::signal_event(call.memory, self.event);
         }
         status.0
     }
@@ -527,7 +527,7 @@ pub(super) fn nt_query_directory_file(call: &ImportCall) -> u32 {
     call.memory
         .write_u32(io_status + IO_STATUS_INFORMATION, written);
     if event != 0 {
-        objects::signal_event(call, event);
+        objects::signal_event(call.memory, event);
     }
     status.0
 }
