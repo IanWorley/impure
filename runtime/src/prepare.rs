@@ -72,7 +72,7 @@ fn checked_sha256(xex: &[u8], source: &Path) -> Result<String, String> {
 fn from_image(image_path: &Path, progress: &Progress) -> Result<(PathBuf, String), String> {
     let io = |error: std::io::Error| format!("{}: {error}", image_path.display());
     progress.stage("Reading your disc image");
-    // Its error already names the file.
+    // Whether the file can't be opened or isn't a disc image, its error already names it.
     let mut image = xiso::Image::open(image_path).map_err(|error| error.to_string())?;
     let entries = image.entries().map_err(io)?;
     let xex_entry = entries

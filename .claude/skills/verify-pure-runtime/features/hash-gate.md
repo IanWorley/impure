@@ -22,6 +22,7 @@ Preconditions:
 - **Nothing loaded.** `grep -c 'entry point\|import:' runtime.log` prints `0`.
 - **Not a disc image.** In the same directory, `head -c 200000 /dev/urandom > "$probe/not-pure.iso"` and run it: the stop line is `<probe>/not-pure.iso is not an Xbox disc image`. Then `rm -rf "$probe"`.
 - **Missing file.** Run `.claude/skills/verify-pure-runtime/scripts/run.sh hash-missing /tmp/does-not-exist.xex`. The stop line is `/tmp/does-not-exist.xex: No such file or directory (os error 2)`, and no `entry point` line appears.
+- **Missing disc image.** Run `.claude/skills/verify-pure-runtime/scripts/run.sh hash-missing-iso /tmp/does-not-exist.iso`. The stop line is `/tmp/does-not-exist.iso: No such file or directory (os error 2)`, naming the path once, and no `entry point` line appears.
 - **Nothing remembered.** `ls -A "$PURE_DATA_DIR"` is empty after the refusals: `last-game` is written only once a game is prepared.
 
 ## Gotchas
