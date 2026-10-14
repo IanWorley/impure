@@ -39,3 +39,4 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Launcher](./launcher.md): with no game, the window asks for one in the system's Open dialog, shows preparation and failures, and remembers the last game.
 - [Game library](./game-library.md): the runtime copies the disc out of an image and builds the game's code into a cached library on the user's machine, then loads it.
 - [Content guard](./content-guard.md): `tools/check-no-game-content.sh` blocks game data and generated code from Git.
+- [Release archive](./release-archive.md): `tools/package-release.sh` packages the runtime with its SDK, bundled FFmpeg and README, and the unpacked archive builds the game library and plays sound with no checkout in reach.
