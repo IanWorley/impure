@@ -26,6 +26,7 @@ mod guest;
 mod handles;
 mod input_script;
 mod kernel;
+mod keyboard_dialog;
 mod launcher;
 mod memory;
 mod physical_memory;
@@ -155,8 +156,20 @@ fn main() -> AppExit {
         remembered: options.remembered(),
     })
     .insert_resource(options)
-    .add_plugins((display::DisplayPlugin, launcher::LauncherPlugin))
-    .add_systems(Update, (play_input_script, read_controller).chain())
+    .add_plugins((
+        display::DisplayPlugin,
+        launcher::LauncherPlugin,
+        keyboard_dialog::KeyboardDialogPlugin,
+    ))
+    .add_systems(
+        Update,
+        (
+            play_input_script,
+            keyboard_dialog::type_into_dialog,
+            read_controller,
+        )
+            .chain(),
+    )
     .add_systems(Update, exit_on_stop);
     if let Some(scripted_input) = scripted_input {
         app.insert_resource(scripted_input);
@@ -185,9 +198,9 @@ fn build_game(options: &Options) -> AppExit {
 
 /// An input script being played back, and the keys it holds down.
 #[derive(Resource)]
-struct ScriptedInput {
+pub(crate) struct ScriptedInput {
     script: input_script::InputScript,
-    held: ButtonInput<KeyCode>,
+    pub(crate) held: ButtonInput<KeyCode>,
 }
 
 impl ScriptedInput {
@@ -222,18 +235,25 @@ fn play_input_script(scripted: Option<ResMut<ScriptedInput>>, mut exit: MessageW
 }
 
 /// Feeds the host keyboard, the first connected gamepad and any input script's held keys to the
-/// first controller each frame.
+/// first controller each frame. While the keyboard dialog is up, the controller is at rest.
 fn read_controller(
     keys: Res<ButtonInput<KeyCode>>,
     gamepads: Query<&bevy::input::gamepad::Gamepad>,
     scripted: Option<Res<ScriptedInput>>,
+    dialog: Res<keyboard_dialog::KeyboardDialog>,
 ) {
-    let mut state = controller::Gamepad::from_keys(&keys);
+    if dialog.is_open() {
+        controller::update(controller::Gamepad::default());
+        return;
+    }
+    let mut state = controller::Gamepad::from_keys(&dialog.unswallowed(&keys));
     if let Some(host) = gamepads.iter().next() {
         state = state.combine(controller::Gamepad::from_host(host));
     }
     if let Some(scripted) = scripted {
-        state = state.combine(controller::Gamepad::from_keys(&scripted.held));
+        state = state.combine(controller::Gamepad::from_keys(
+            &dialog.unswallowed(&scripted.held),
+        ));
     }
     controller::update(state);
 }

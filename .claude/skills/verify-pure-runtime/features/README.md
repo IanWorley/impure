@@ -34,6 +34,7 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 - [Keyboard input](./input.md): the host keyboard (or an `--input-script`) drives controller 0 through a binding table, and the game reacts.
 - [Rendering](./rendering.md): shaders translated to WGSL, draws run through wgpu, and the game's start-up screens shown in the window.
 - [Audio](./audio.md): with the `audio` feature, the game's XMA streams are decoded with FFmpeg and its mixed frames play on the default output device, and can be captured to a WAV file.
+- [On-screen keyboard](./keyboard.md): when the game asks for text (naming an ATV in the garage), the window shows its prompt, takes typing from the keyboard or an input script, and returns the text or a cancel without stopping the game.
 - [Save games](./saves.md): the game creates, writes and reloads its save package in the runtime's data directory.
 - [Executable hash gate](./hash-gate.md): the runtime refuses any executable but the recorded one.
 - [Launcher](./launcher.md): with no game, the window asks for one in the system's Open dialog, shows preparation and failures, and remembers the last game.
