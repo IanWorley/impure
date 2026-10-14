@@ -54,8 +54,11 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 impl Image {
+    /// Its errors name the file, which an `io::Error` from opening it would not on its own.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let mut file = File::open(path)?;
+        let mut file = File::open(path).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
         for partition in PARTITION_OFFSETS {
             let mut magic = [0; MAGIC.len()];
             let found = file
@@ -343,5 +346,19 @@ mod tests {
         fs::write(&path, vec![0; (SECTOR_COUNT * SECTOR_SIZE) as usize]).unwrap();
         assert!(Image::open(&path).is_err());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn names_a_missing_image() {
+        let path = scratch("missing.iso");
+        let Err(error) = Image::open(&path) else {
+            panic!("opened a missing image");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(
+            error
+                .to_string()
+                .starts_with(&format!("{}: ", path.display()))
+        );
     }
 }
