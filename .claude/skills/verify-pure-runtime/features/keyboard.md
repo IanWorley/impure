@@ -13,13 +13,13 @@ When the game asks the player to type something, as when naming an ATV in the Wo
 ## How to get to it (user POV)
 
 - World Tour with a ride saved: on the event map press Y (Garage), then A (Modify Your Ride), go down to the last part, Name ("Name your ATV."), and press A. Type, then Enter or Escape.
-- With no ride saved yet, World Tour opens the garage's build first; save a ride (see [`inputs/to-world-tour.txt`](../inputs/to-world-tour.txt)) and the route above applies.
+- With no ride saved yet, World Tour opens the garage's build first; save a ride (see the preconditions below) and the route above applies.
 
 ## Driving it with run.sh
 
 Preconditions:
 
-- `scripts/doctor.sh` prints `ready`. Use a fresh `PURE_DATA_DIR` holding a copy of the built game library (see [saves.md](./saves.md)) and a save with a ride in it: run [`inputs/to-world-tour.txt`](../inputs/to-world-tour.txt) once in it, or copy a `content/` directory that has one.
+- `scripts/doctor.sh` prints `ready`. Use a fresh `PURE_DATA_DIR` holding a copy of the built game library (see [saves.md](./saves.md)) and a save with a ride in it. Either copy in a `content/` directory that has one, or make one in two runs: [`inputs/to-tutorial.txt`](../inputs/to-tutorial.txt) creates the save (as in saves.md's "Create and write"), then [`inputs/to-world-tour.txt`](../inputs/to-world-tour.txt) saves a ride. Skip the first run and the save dialogs shift `to-world-tour.txt`'s presses, so it never leaves the tutorial.
 
 - **Name the ATV (any host).** `VERIFY_RUST_LOG=info,controller=debug VERIFY_TIMEOUT_SECONDS=900 .claude/skills/verify-pure-runtime/scripts/run.sh keyboard originals/disc/default.xex --input-script .claude/skills/verify-pure-runtime/inputs/to-garage-name.txt`. The script exits itself at frame 8,422: `summary.txt` shows `runtime exit: 0` and an empty `stop line:`. `runtime.log` shows `keyboard: shown` (default `"Fire Mantis"` for the ride in the user's save), `keyboard: accepted "wild"`, `keyboard: shown` again with default `"wild"`, then `keyboard: cancelled`. `k-name.png` shows the Name part selected with the old name in the panel, and `k-accepted.png` and `k-cancelled.png` show `wild`.
 - **Input isolation.** In the same log, from the A press that opens the keyboard (`controller: … buttons: 4096`, just before `keyboard: shown`) to `keyboard: accepted`, the only other `controller:` line is the return to rest (`buttons: 0`): the Backspaces (B) and W I L D (trigger, stick) never reach the game. The same holds from the second press to `keyboard: cancelled`. No `controller:` line with `buttons: 4096` follows the accepting Enter until the script's next Enter.

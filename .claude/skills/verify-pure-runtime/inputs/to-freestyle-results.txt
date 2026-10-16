@@ -4,6 +4,7 @@
 # itself: a replay camera with "Proceed to Results", then from frame 16,000 Return every 250
 # frames shows the results table, returns to the main menu and walks into World Tour's stage
 # select. Captures every 600 frames while riding and before each press (`fe-NNNNN.png`).
+# Needs a save, as to-race.txt does: run to-tutorial.txt once first in the same PURE_DATA_DIR.
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter

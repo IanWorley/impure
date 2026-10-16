@@ -5,6 +5,7 @@
 # every 212 frames takes the first event, the new ATV and the race's tips. Then the throttle is
 # held and the race captured every 300 frames (`t-ride-NNNNN.png`) until the exit. With a ride
 # already saved, the garage opens on it and the X holds do nothing; the rest is the same.
+# Needs a save, as to-race.txt does: run to-tutorial.txt once first in the same PURE_DATA_DIR.
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter

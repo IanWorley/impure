@@ -6,7 +6,8 @@
 # "wild"). A opens the keyboard again, K types a letter and Escape cancels (`k-cancelled.png`:
 # still "wild"). The dialog itself is drawn by the window, not the game, so frame captures show
 # the game's screen under it; the log's `keyboard:` lines show it opening and closing.
-# Needs a saved ride: run to-world-tour.txt once first in the same PURE_DATA_DIR.
+# Needs a saved ride: in a fresh PURE_DATA_DIR, run to-tutorial.txt once (it creates the save),
+# then to-world-tour.txt once (it saves a ride).
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter

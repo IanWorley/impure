@@ -5,6 +5,7 @@
 # by 24,000. From there Return every 250 frames shows the results table (`rf-24850.png`),
 # returns to the main menu and walks into World Tour. About 15 minutes; use
 # VERIFY_TIMEOUT_SECONDS=1500. Captures every 1,800 frames, then before each press.
+# Needs a save, as to-race.txt does: run to-tutorial.txt once first in the same PURE_DATA_DIR.
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter

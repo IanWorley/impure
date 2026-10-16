@@ -1,10 +1,14 @@
 # Boot to the tutorial and ride: Return through the start-up screens, the title screen and the save
-# dialogs (creating a save when there is none). The Escape at frame 3,420 opens the tutorial's
-# pause menu, which the next Return resumes. The tutorial then shows instructions that A
-# dismisses and one that waits for a fresh pull of the throttle; when each appears depends on
-# the frame rate. So from frame 3,610 the script holds the throttle (W), and every 150 frames
-# eases off it, taps Return, and pulls it again. A frame capture before each menu press and
-# every 300 frames while riding.
+# dialogs (creating a save when there is none). The presses up to frame 3,426, shared by every
+# to-*.txt script, are timed for a save that already exists: then the Escape at frame 3,420 opens
+# the tutorial's pause menu, which the next Return resumes. With no save, the `No Save File
+# Found` and `Save Successful` dialogs take two of the Returns and the Escape lands on the
+# tutorial's first instruction instead. This script's ride does not need the pause menu, so it
+# still runs, and one run of it creates the save the other scripts need.
+# The tutorial then shows instructions that A dismisses and one that waits for a fresh pull of
+# the throttle; when each appears depends on the frame rate. So from frame 3,610 the script
+# holds the throttle (W), and every 150 frames eases off it, taps Return, and pulls it again. A
+# frame capture before each menu press and every 300 frames while riding.
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter
