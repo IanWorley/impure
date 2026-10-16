@@ -4,6 +4,8 @@
 # frames takes the defaults (Race, track, character, ATV) and loads the race; the later presses
 # land in the race and do nothing. A capture before each press (`r-NN.png`), then the throttle
 # is held and the race captured every 300 frames (`r-ride-NNNN.png`) until the exit.
+# Needs a save: with none, the Escape misses the pause menu (see to-tutorial.txt) and the run
+# stays in the tutorial. Run to-tutorial.txt once first in the same PURE_DATA_DIR.
 898 screenshot shot-000.png
 900 down Enter
 906 up Enter
