@@ -13,7 +13,7 @@ There are two tracks:
 - **Analysis.** `tools/decompile.sh` turns your own `default.xex` into Ghidra pseudo-C, written locally to `local/decomp/`.
 - **Static recompilation.** XenonRecomp translates your `default.xex` into C++, and the Rust runtime in `runtime/`, built on Bevy, provides the console underneath it: memory, threads and synchronization, files from your disc, a stand-in GPU command processor, and audio and system services. The runtime never contains the game's code: the first time you open your copy, it translates and compiles it on your machine into a library it then loads (`runtime/src/builder/`), and later launches load that at once. Every mode of the game plays: the tutorial, World Tour with its garage, Race, Sprint and Freestyle events to their results, Trial, and the menus and saves, at about 30 frames a second on an Apple M4. Its draws run on the GPU through wgpu, and audio plays when built with the `audio` feature, which decodes the game's XMA sound with FFmpeg.
 
-The runtime builds for macOS, Windows and Linux on x86-64 and arm64, and the game has run on Linux x86-64 and on an Apple M4 Mac, where it plays the tutorial at about 20 to 26 frames a second in a release build. Without your copy of the game, it builds with no game code at all.
+The runtime builds for macOS, Windows and Linux on x86-64 and arm64, and the game has run on Linux x86-64 and on an Apple M4 Mac, where it plays the tutorial at about 18 frames a second in a release build. Without your copy of the game, it builds with no game code at all.
 
 See [the tooling guide](docs/tooling.md) for extraction, executable inspection, and Ghidra setup, and [the analysis log](docs/analysis.md) for the target fingerprint.
 
