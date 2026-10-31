@@ -52,8 +52,9 @@ enum Axis {
 }
 
 /// The default bindings, laid out for a racer: W and S are the accelerator and brake triggers,
-/// A and D steer, and the arrow keys are the D-pad for menus.
-const BINDINGS: [(KeyCode, Binding); 21] = [
+/// A and D steer, C and V click the left and right sticks, and the arrow keys are the D-pad for
+/// menus.
+const BINDINGS: [(KeyCode, Binding); 23] = [
     (KeyCode::KeyW, Binding::RightTrigger),
     (KeyCode::KeyS, Binding::LeftTrigger),
     (
@@ -93,6 +94,8 @@ const BINDINGS: [(KeyCode, Binding); 21] = [
     (KeyCode::KeyE, Binding::Button(RIGHT_SHOULDER)),
     (KeyCode::Escape, Binding::Button(START)),
     (KeyCode::Tab, Binding::Button(BACK)),
+    (KeyCode::KeyC, Binding::Button(LEFT_THUMB)),
+    (KeyCode::KeyV, Binding::Button(RIGHT_THUMB)),
 ];
 
 /// The bound key with this name as Bevy spells it (`Enter`, `KeyW`, `ArrowUp`), for input scripts.
@@ -304,6 +307,13 @@ mod tests {
         let (after, gamepad) = state();
         assert_eq!(after, before.wrapping_add(1));
         assert_eq!(gamepad, pressed);
+    }
+
+    #[test]
+    fn every_pad_button_has_a_key() {
+        let all_keys: Vec<KeyCode> = BINDINGS.iter().map(|&(key, _)| key).collect();
+        let pad_buttons = GAMEPAD_BUTTONS.iter().fold(0, |bits, &(_, bit)| bits | bit);
+        assert_eq!(held(&all_keys).buttons, pad_buttons);
     }
 
     #[test]

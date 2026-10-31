@@ -26,7 +26,8 @@ Playing
    different copy, click "Open Pure disc image or default.xex..." again.
 
 Keyboard: W throttle, S brake, A/D steer, I/J/K/L right stick, Enter or Space = A,
-Backspace = B, X, Y, Q/E shoulders, Escape = Start, Tab = Back, arrow keys = D-pad.
+Backspace = B, X, Y, Q/E shoulders, C/V click the left/right stick (V = Look Behind),
+Escape = Start, Tab = Back, arrow keys = D-pad.
 A gamepad works too.
 
 Your saves and the prepared game live in:

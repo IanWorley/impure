@@ -51,7 +51,7 @@ Preconditions:
 - **Launcher.** `PURE_DATA_DIR=$(mktemp -d) PURE_RUNTIME_BINARY="$archive/pure-runtime" VERIFY_RUN_SECONDS=8 .claude/skills/verify-pure-runtime/scripts/run.sh release-launcher --choose`: `still running after 8s`, `window: present` (see [launcher.md](./launcher.md)).
 - **README.** `cmp tools/release/README.txt "$archive/README.txt"` is silent, then compare each claim with the code that makes it true:
   - the labels: `grep -F "$(sed -n 's/^const OPEN_LABEL: &str = "\(.*\)";/\1/p' runtime/src/launcher.rs)" "$archive/README.txt"` matches, and so does `grep -F 'click Play'` (`PLAY_LABEL`);
-  - the keys: the `Keyboard:` lines name the 21 entries of `BINDINGS` in `runtime/src/controller.rs` (W right trigger, S left trigger, A/D left stick, I/K and J/L right stick, Enter and Space A, Backspace B, X, Y, Q/E shoulders, Escape Start, Tab Back, arrows D-pad), and the controller's doc comment covers "a gamepad works too";
+  - the keys: the `Keyboard:` lines name the 23 entries of `BINDINGS` in `runtime/src/controller.rs` (W right trigger, S left trigger, A/D left stick, I/K and J/L right stick, Enter and Space A, Backspace B, X, Y, Q/E shoulders, C/V left and right stick clicks, Escape Start, Tab Back, arrows D-pad), and the controller's doc comment covers "a gamepad works too";
   - the data directories match `runtime/src/data_dir.rs` (on Linux, `$XDG_DATA_HOME/pure-runtime` when that is set);
   - the compiler commands match `install_hint()` in `runtime/src/builder/mod.rs`, and "about 10 to 15 minutes" matches the `Compiling the game` stage;
   - `pure-runtime <your.iso> --build-game` fits the usage line `./pure-runtime --bogus` prints;
