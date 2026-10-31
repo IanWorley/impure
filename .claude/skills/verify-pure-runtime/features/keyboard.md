@@ -8,7 +8,7 @@ When the game asks the player to type something, as when naming an ATV in the Wo
 - `keyboard-accept` returns the typed text to the game (`keyboard: accepted "wild"`); the garage's name panel shows it, and the next keyboard opens with it as the default.
 - `keyboard-cancel` closes the dialog without changing the name (`keyboard: cancelled`).
 - `keyboard-input-isolation` holds the controller at rest while the dialog is up and keeps the keys pressed into it from reaching the game after it closes.
-- `keyboard-script-typing` lets an input script type: letter keys type their lowercase letter, Space a space, Backspace erases, Enter accepts and Escape cancels. Scripts can only name bound keys, so they type with the bound letters (W A S D I J K L X Y Q E).
+- `keyboard-script-typing` lets an input script type: letter keys type their lowercase letter, Space a space, Backspace erases, Enter accepts and Escape cancels. Scripts can only name bound keys, so they type with the bound letters (W A S D I J K L X Y Q E C V).
 
 ## How to get to it (user POV)
 
