@@ -9,7 +9,7 @@ Not reproduced yet, each reported once in the log as `WARN renderer: not reprodu
 - texture formats the decoder lacks (`texture format N`), textures past the end of physical memory, primitive types with no host equivalent (`primitive type 0x…`), and draws reading more guest memory than a batch holds;
 - a GPU error in a recorded pass (`… failed: <error>`).
 
-Resolved textures are never written back to guest memory, so a title reading them with the CPU would not see them; that is not logged.
+A colour resolve whose destination was not also resolved in the last two frames is stored in guest memory too (tiled, in the destination's byte order) before the command processor reads on, as the console's resolves are: while a level loads the game renders each ATV's livery, resolves it with its mip levels and compresses it to DXT1 with the CPU. Passes repeated every frame (some alternate between two destinations, as the front buffers do), and depth resolves, stay on the host only, so a title reading those with the CPU would not see them; that is not logged. `VERIFY_RUST_LOG=info,renderer=debug` logs each stored resolve (`stored the resolve to 0x… (…) in guest memory`).
 
 Shaders that translate with something skipped are reported once each as `shader: … valid WGSL, not translated: {…}` (see `boot-shader-translation`); none do in the tutorial or a race.
 

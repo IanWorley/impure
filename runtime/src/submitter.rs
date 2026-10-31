@@ -43,6 +43,12 @@ pub enum Work {
         captures: Vec<PathBuf>,
         readbacks: Vec<Readback>,
     },
+    /// Waits for the GPU to finish the work submitted so far, then sends `buffer`'s contents
+    /// back through `reply`.
+    ReadBuffer {
+        buffer: wgpu::Buffer,
+        reply: Sender<Vec<u8>>,
+    },
 }
 
 /// A texture copied into a buffer by recorded commands, to save as a PNG file once they have run.
@@ -292,6 +298,22 @@ impl Worker {
                     readback.save(&self.device, self.frame_wait_limit);
                 }
                 "presentation"
+            }
+            Work::ReadBuffer { buffer, reply } => {
+                let slice = buffer.slice(..);
+                let (mapped, outcome) = mpsc::channel();
+                slice.map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = mapped.send(result.is_ok());
+                });
+                let _ = self.device.poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(self.frame_wait_limit),
+                });
+                // Dropping `reply` unanswered tells the renderer the read failed.
+                if outcome.try_recv() == Ok(true) {
+                    let _ = reply.send(slice.get_mapped_range().to_vec());
+                }
+                "buffer read"
             }
         };
         if let Some(error) = bevy::tasks::block_on(scope.pop()) {

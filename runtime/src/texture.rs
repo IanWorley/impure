@@ -21,7 +21,11 @@ const FORMAT_32_FLOAT: u32 = 36;
 
 /// Tiled textures are stored in 32x32-block macro tiles, so their pitch is padded to 32 blocks.
 const MACRO_TILE_BLOCKS: u32 = 32;
+/// Tiling interleaves macro tiles of small texels within 4 KiB, so tiled sizes round up to it.
+const TILED_ALIGNMENT: u32 = 4096;
 const DXT_BLOCK_SIZE: u32 = 4;
+/// Every resolve destination format handled (8_8_8_8, 32_FLOAT) is 32 bits a texel in memory.
+pub const RESOLVED_TEXEL_BYTES: u32 = 4;
 
 /// What the host texture holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,10 +85,8 @@ fn storage_blocks(descriptor: &TextureDescriptor, layout: Layout) -> (u32, u32) 
     }
 }
 
-/// How many bytes of guest memory the base level spans, if the format is handled. Tiling
-/// interleaves macro tiles of small texels within 4 KiB, so tiled sizes round up to it.
+/// How many bytes of guest memory the base level spans, if the format is handled.
 pub fn guest_size(descriptor: &TextureDescriptor) -> Option<u32> {
-    const TILED_ALIGNMENT: u32 = 4096;
     let layout = layout(descriptor.format)?;
     let (pitch, height) = storage_blocks(descriptor, layout);
     let size = pitch * height * layout.bytes_per_block;
@@ -155,7 +157,37 @@ pub fn decode(descriptor: &TextureDescriptor, guest: &[u8]) -> Option<Decoded> {
     })
 }
 
-/// Applies the GPU's byte order (xenos::Endian) to every 32-bit word.
+/// How many bytes of guest memory a resolve destination `width` by `height` texels spans.
+pub fn resolved_size(width: u32, height: u32) -> u32 {
+    let pitch = width.next_multiple_of(MACRO_TILE_BLOCKS);
+    let rows = height.next_multiple_of(MACRO_TILE_BLOCKS);
+    (pitch * rows * RESOLVED_TEXEL_BYTES).next_multiple_of(TILED_ALIGNMENT)
+}
+
+/// Stores a resolved rectangle as the GPU does, the inverse of `decode`: `texels` are its rows
+/// of 32-bit texels packed tightly, `width` texels each, with the top-left one at `origin` in a
+/// tiled destination `pitch` texels wide whose guest bytes are `guest`, in byte order `endian`.
+pub fn store_resolved(
+    guest: &mut [u8],
+    pitch: u32,
+    endian: u32,
+    origin: (u32, u32),
+    width: u32,
+    texels: &[u8],
+) {
+    let mut texels = texels.to_vec();
+    swap_words(&mut texels, endian);
+    let pitch = pitch.next_multiple_of(MACRO_TILE_BLOCKS);
+    let texel_bytes_log2 = RESOLVED_TEXEL_BYTES.trailing_zeros();
+    for (index, texel) in (0..).zip(texels.as_chunks::<{ RESOLVED_TEXEL_BYTES as usize }>().0) {
+        let (x, y) = (origin.0 + index % width, origin.1 + index / width);
+        let offset = tiled_offset(x, y, pitch, texel_bytes_log2) as usize;
+        if let Some(stored) = guest.get_mut(offset..offset + texel.len()) {
+            stored.copy_from_slice(texel);
+        }
+    }
+}
+
 /// A fetch constant's swizzle (three bits per component: a component, or 4 for zero and 5 for
 /// one) for a host texture with `channels` channels. The console's formats with fewer than four
 /// components repeat their last one (RRRR, RGGG), where host textures give zero and one, so
@@ -177,6 +209,7 @@ pub fn host_swizzle(swizzle: u32, channels: u8) -> u32 {
     })
 }
 
+/// Applies the GPU's byte order (xenos::Endian) to every 32-bit word.
 pub fn swap_words(data: &mut [u8], endian: u32) {
     const EIGHT_IN_16: u32 = 1;
     const EIGHT_IN_32: u32 = 2;
@@ -391,6 +424,40 @@ mod tests {
         let decoded = decode(&texture, &guest).unwrap();
         assert_eq!(decoded.format, HostFormat::R8);
         assert!((0..32 * 32).all(|i| decoded.data[i as usize] == ((i % 32) + (i / 32) * 7) as u8));
+    }
+
+    #[test]
+    fn stored_resolves_decode_to_the_resolved_texels() {
+        // A 64x32 8888 destination in 8-in-32 byte order, each texel distinct, stored as its
+        // top and bottom halves by two resolves.
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 32;
+        const HALF: u32 = HEIGHT / 2;
+        const EIGHT_IN_32: u32 = 2;
+        let texels: Vec<u8> = (0..WIDTH * HEIGHT).flat_map(|i| i.to_le_bytes()).collect();
+        let half_bytes = (WIDTH * HALF * RESOLVED_TEXEL_BYTES) as usize;
+        let mut guest = vec![0; resolved_size(WIDTH, HEIGHT) as usize];
+        store_resolved(
+            &mut guest,
+            WIDTH,
+            EIGHT_IN_32,
+            (0, 0),
+            WIDTH,
+            &texels[..half_bytes],
+        );
+        store_resolved(
+            &mut guest,
+            WIDTH,
+            EIGHT_IN_32,
+            (0, HALF),
+            WIDTH,
+            &texels[half_bytes..],
+        );
+        let texture = TextureDescriptor {
+            endian: EIGHT_IN_32,
+            ..descriptor(FORMAT_8_8_8_8, WIDTH, HEIGHT, true)
+        };
+        assert_eq!(decode(&texture, &guest).unwrap().data, texels);
     }
 
     #[test]

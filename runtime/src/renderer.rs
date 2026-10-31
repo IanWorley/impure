@@ -4,8 +4,8 @@
 //! memory, and finally displays a resolved front buffer. Here each EDRAM render target is a host
 //! texture, a resolve copies into a host texture named by its destination address, and a swap
 //! copies the named front buffer into the window's display texture. Textures sampled from a
-//! resolve destination use the resolved host texture. Nothing is written back to guest memory,
-//! so a title reading its resolved textures with the CPU would not see them.
+//! resolve destination use the resolved host texture. Colour resolves not repeated from the last
+//! few frames are also stored in guest memory, for titles that read them with the CPU.
 //!
 //! Translated shaders read guest data themselves (see `translate`): constants from one storage
 //! buffer, vertices and indices from a window of guest memory uploaded per draw, and textures
@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, mpsc};
 
 use bevy::log::{debug, info, warn};
 use wgpu::util::DeviceExt;
@@ -166,13 +166,16 @@ const COLOR_INFO_REGISTERS: [u32; 4] = [
     registers::RB_COLOR3_INFO,
 ];
 const COPY_DEST_PITCH_MASK: u32 = 0x3FFF;
+/// RB_COPY_DEST_INFO: the destination's byte order (xenos::Endian128).
+const COPY_DEST_ENDIAN_MASK: u32 = 0x7;
+/// A resolve to a texture resolved this many frames ago or fewer repeats a per-frame pass: two,
+/// as the front buffer and the luminance passes alternate between two textures.
+const REPEATED_RESOLVE_FRAMES: u64 = 2;
 const COPY_DEST_HEIGHT_SHIFT: u32 = 16;
 const COPY_DEST_FORMAT_SHIFT: u32 = 7;
 const COPY_DEST_FORMAT_MASK: u32 = 0x3F;
 /// RB_COPY_DEST_INFO: the resolve writes red and blue exchanged, as A8R8G8B8 textures expect.
 const COPY_DEST_SWAP_RED_BLUE: u32 = 1 << 24;
-/// Every resolve destination format handled (8_8_8_8, 32_FLOAT) is 32 bits a texel in memory.
-const RESOLVE_DESTINATION_BYTES_PER_TEXEL: u32 = 4;
 /// xenos::ColorFormat k_8_8_8_8, the only resolve destination format handled.
 const COPY_FORMAT_8_8_8_8: u32 = 6;
 const COPY_FORMAT_32_FLOAT: u32 = 36;
@@ -248,6 +251,77 @@ struct CachedTexture {
     guest: Vec<u8>,
     /// The frame it was last compared with guest memory.
     checked_frame: u64,
+}
+
+/// A resolved rectangle copied into a buffer by recorded commands, to store in guest memory once
+/// they have run.
+struct WriteBack {
+    buffer: wgpu::Buffer,
+    padded_row_bytes: u32,
+    /// The resolved texture's physical address, its size (its width is the pitch), its byte
+    /// order (xenos::Endian128) and the rectangle resolved into it.
+    base: u32,
+    destination: (u32, u32),
+    endian: u32,
+    rectangle: Rectangle,
+}
+
+impl WriteBack {
+    fn record(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        base: u32,
+        endian: u32,
+        rectangle: Rectangle,
+    ) -> Self {
+        let rectangle = rectangle.clamp(texture.width(), texture.height());
+        let (width, height) = (
+            rectangle.right - rectangle.left,
+            rectangle.bottom - rectangle.top,
+        );
+        let padded_row_bytes = (width * texture::RESOLVED_TEXEL_BYTES)
+            .next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("resolve write-back"),
+            size: u64::from(padded_row_bytes * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: rectangle.left,
+                    y: rectangle.top,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_bytes),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Self {
+            buffer,
+            padded_row_bytes,
+            base,
+            destination: (texture.width(), texture.height()),
+            endian,
+            rectangle,
+        }
+    }
 }
 
 /// A texture bind group's layout, and each texture constant's texture and sampler.
@@ -450,6 +524,10 @@ pub struct Renderer {
     depth_targets: HashMap<RenderTargetKey, wgpu::Texture>,
     /// Resolved textures, by their physical destination address.
     resolved: HashMap<u32, wgpu::Texture>,
+    /// The frame each resolved texture was last written in, by address, and those stored in
+    /// guest memory this frame (see `resolve_color`).
+    last_resolved: HashMap<u32, u64>,
+    stored_this_frame: HashSet<u32>,
     /// Copies of the top-left parts of resolved textures that draws sample, by address, size
     /// and format.
     resolved_parts: HashMap<(u32, u32, u32, wgpu::TextureFormat), wgpu::Texture>,
@@ -555,6 +633,8 @@ impl Renderer {
             render_targets: HashMap::new(),
             depth_targets: HashMap::new(),
             resolved: HashMap::new(),
+            last_resolved: HashMap::new(),
+            stored_this_frame: HashSet::new(),
             resolved_parts: HashMap::new(),
             textures: HashMap::new(),
             placeholders: HashMap::new(),
@@ -684,6 +764,7 @@ impl Renderer {
         // behind the title, and the window's own frames queue up behind the backlog. The
         // title records the next frame while the GPU finishes this one.
         self.presented += 1;
+        self.stored_this_frame.clear();
         let readbacks = self
             .resolve_dump
             .take()
@@ -1868,6 +1949,7 @@ impl Renderer {
         }
         let mut batch = self.take_batch();
         let encoder = &mut batch.encoder;
+        let mut write_back = None;
         match (COLOR_INFO_REGISTERS.get(source as usize), rectangle) {
             (Some(&info_register), Some(rectangle)) => {
                 let info = register(info_register);
@@ -1877,7 +1959,8 @@ impl Renderer {
                 };
                 let format = (info >> COLOR_FORMAT_SHIFT) & COLOR_FORMAT_MASK;
                 if let Some(format) = color_target_format(format) {
-                    self.resolve_color(encoder, memory, (key, format), surface, rectangle);
+                    write_back =
+                        self.resolve_color(encoder, memory, (key, format), surface, rectangle);
                 }
             }
             (None, Some(rectangle)) if source == COPY_SOURCE_DEPTH => {
@@ -1956,8 +2039,12 @@ impl Renderer {
             });
         }
         self.batch = Some(batch);
+        if let Some(write_back) = write_back {
+            self.write_back(memory, view, write_back);
+        }
     }
 
+    /// A colour resolve, and the copy of it to store in guest memory, if it is to be stored.
     fn resolve_color(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1965,15 +2052,14 @@ impl Renderer {
         key: (RenderTargetKey, wgpu::TextureFormat),
         surface: Surface,
         rectangle: Rectangle,
-    ) {
+    ) -> Option<WriteBack> {
         let info = read_register(memory, registers::RB_COPY_DEST_INFO);
         let format = (info >> COPY_DEST_FORMAT_SHIFT) & COPY_DEST_FORMAT_MASK;
         let Some(format) = resolve_destination_format(format) else {
-            return self.report(format!("resolves to format {format}"));
+            self.report(format!("resolves to format {format}"));
+            return None;
         };
-        let Some(source) = self.render_targets.get(&key).cloned() else {
-            return;
-        };
+        let source = self.render_targets.get(&key).cloned()?;
         let device = &self.device;
         let pipeline = self
             .resolves
@@ -1982,11 +2068,68 @@ impl Renderer {
             .clone();
         let view = self.view(&source, wgpu::TextureAspect::All);
         let size = (source.width(), source.height());
-        if let Some(destination) =
-            self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle)
-        {
-            self.depth_resolves.remove(&destination);
+        let (destination, base, rectangle) =
+            self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle)?;
+        self.depth_resolves.remove(&destination);
+        // Pure renders each ATV's livery while a level loads, resolves it and compresses it with
+        // the CPU. Storing a resolve waits for the GPU, which for the passes of every frame
+        // halved the frame rate, so passes repeated from the last few frames (which in Pure
+        // only draws read, some double-buffered) are not stored. Within a frame each texture is
+        // stored by every resolve or none, so one resolved a part at a time is stored whole.
+        let recent = self
+            .last_resolved
+            .insert(base, self.presented)
+            .is_some_and(|frame| self.presented - frame <= REPEATED_RESOLVE_FRAMES);
+        if rectangle.is_empty() || (recent && !self.stored_this_frame.contains(&base)) {
+            return None;
         }
+        self.stored_this_frame.insert(base);
+        let endian = info & COPY_DEST_ENDIAN_MASK;
+        Some(WriteBack::record(
+            &self.device,
+            encoder,
+            &destination,
+            base,
+            endian,
+            rectangle,
+        ))
+    }
+
+    /// Stores a resolve in guest memory once the GPU has run it, before the command processor
+    /// reads another packet, so the title finds it there once its fence says the resolve is done.
+    fn write_back(&mut self, memory: &GuestMemory, view: View, write_back: WriteBack) {
+        self.submit();
+        let (reply, read) = mpsc::channel();
+        self.submitter.send(Work::ReadBuffer {
+            buffer: write_back.buffer.clone(),
+            reply,
+        });
+        let Ok(bytes) = read.recv() else {
+            return self.report("storing resolves the GPU did not finish in time".into());
+        };
+        let Some(address) = view(write_back.base) else {
+            return self.report("resolves past the end of physical memory".into());
+        };
+        let WriteBack {
+            padded_row_bytes,
+            destination: (pitch, height),
+            endian,
+            rectangle,
+            ..
+        } = write_back;
+        let width = rectangle.right - rectangle.left;
+        let row_bytes = (width * texture::RESOLVED_TEXEL_BYTES) as usize;
+        let texels: Vec<u8> = bytes
+            .chunks(padded_row_bytes as usize)
+            .flat_map(|row| &row[..row_bytes])
+            .copied()
+            .collect();
+        let mut guest = vec![0; texture::resolved_size(pitch, height) as usize];
+        memory.read_bytes(address, &mut guest);
+        let origin = (rectangle.left, rectangle.top);
+        texture::store_resolved(&mut guest, pitch, endian, origin, width, &texels);
+        memory.write_bytes(address, &guest);
+        debug!(target: "renderer", "stored the resolve to {:#010x} ({rectangle:?}) in guest memory", write_back.base);
     }
 
     /// A depth resolve: one sample per pixel of the depth surface's depth, as a float texture
@@ -2010,7 +2153,7 @@ impl Renderer {
         let view = self.view(&source, wgpu::TextureAspect::DepthOnly);
         let size = (source.width(), source.height());
         let float_depth = edram::depth_is_float(read_register(memory, registers::RB_DEPTH_INFO));
-        if let Some(destination) =
+        if let Some((destination, ..)) =
             self.resolve_into(encoder, memory, &pipeline, &view, size, surface, rectangle)
         {
             self.depth_resolves.insert(destination, float_depth);
@@ -2030,7 +2173,8 @@ impl Renderer {
     }
 
     /// Draws a resolve pipeline over `rectangle` of the texture at the destination address,
-    /// creating that texture in the pipeline's format if needed.
+    /// creating that texture in the pipeline's format if needed. Returns the texture drawn
+    /// into, its address and the rectangle drawn in it.
     #[allow(clippy::too_many_arguments)]
     fn resolve_into(
         &mut self,
@@ -2041,7 +2185,7 @@ impl Renderer {
         (source_width, source_height): (u32, u32),
         surface: Surface,
         rectangle: Rectangle,
-    ) -> Option<wgpu::Texture> {
+    ) -> Option<(wgpu::Texture, u32, Rectangle)> {
         let register = |index| read_register(memory, index);
         let pitch = register(registers::RB_COPY_DEST_PITCH);
         let (width, height) = (
@@ -2066,27 +2210,28 @@ impl Renderer {
         let containing = self.resolved.iter().find_map(|(&base, texture)| {
             let size = (texture.width(), texture.height());
             let rows_down = rows_into(base, size, destination_address)?;
-            (texture.format() == pipeline.format).then(|| (texture.clone(), rows_down))
+            (texture.format() == pipeline.format).then(|| (texture.clone(), base, rows_down))
         });
-        let (destination, rows_down) = match (containing, self.resolved.get(&destination_address)) {
-            (Some(containing), _) => containing,
-            (None, Some(texture))
-                if (texture.width(), texture.height(), texture.format())
-                    == (width, height, pipeline.format) =>
-            {
-                (texture.clone(), 0)
-            }
-            _ => {
-                let texture = surface_texture(
-                    &self.device,
-                    (width, height),
-                    pipeline.format,
-                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                );
-                self.resolved.insert(destination_address, texture.clone());
-                (texture, 0)
-            }
-        };
+        let (destination, base, rows_down) =
+            match (containing, self.resolved.get(&destination_address)) {
+                (Some(containing), _) => containing,
+                (None, Some(texture))
+                    if (texture.width(), texture.height(), texture.format())
+                        == (width, height, pipeline.format) =>
+                {
+                    (texture.clone(), destination_address, 0)
+                }
+                _ => {
+                    let texture = surface_texture(
+                        &self.device,
+                        (width, height),
+                        pipeline.format,
+                        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    );
+                    self.resolved.insert(destination_address, texture.clone());
+                    (texture, destination_address, 0)
+                }
+            };
         let rectangle = Rectangle {
             top: rectangle.top + rows_down,
             bottom: (rectangle.bottom + rows_down).min(destination.height()),
@@ -2165,14 +2310,14 @@ impl Renderer {
             dump.readbacks
                 .extend(Readback::record(&self.device, encoder, &destination, path));
         }
-        Some(destination)
+        Some((destination, base, rectangle))
     }
 }
 
 /// How many rows into a resolve destination of `size` texels at `base` the address `address`
 /// starts, if it starts a row below the first.
 fn rows_into(base: u32, (width, height): (u32, u32), address: u32) -> Option<u32> {
-    let row_bytes = width * RESOLVE_DESTINATION_BYTES_PER_TEXEL;
+    let row_bytes = width * texture::RESOLVED_TEXEL_BYTES;
     let offset = address.checked_sub(base).filter(|&offset| offset > 0)?;
     let rows_down = offset / row_bytes;
     (offset % row_bytes == 0 && rows_down < height).then_some(rows_down)
@@ -3192,11 +3337,11 @@ mod tests {
         const BASE: u32 = 0x01CE_8000;
         const SCREEN: (u32, u32) = (1280, 720);
         const TILE_ROWS: u32 = 512;
-        let lower_tile = BASE + SCREEN.0 * TILE_ROWS * RESOLVE_DESTINATION_BYTES_PER_TEXEL;
+        let lower_tile = BASE + SCREEN.0 * TILE_ROWS * texture::RESOLVED_TEXEL_BYTES;
         assert_eq!(rows_into(BASE, SCREEN, lower_tile), Some(TILE_ROWS));
         assert_eq!(rows_into(BASE, SCREEN, BASE), None);
         assert_eq!(rows_into(BASE, SCREEN, lower_tile + 4), None);
-        let past_the_end = BASE + SCREEN.0 * SCREEN.1 * RESOLVE_DESTINATION_BYTES_PER_TEXEL;
+        let past_the_end = BASE + SCREEN.0 * SCREEN.1 * texture::RESOLVED_TEXEL_BYTES;
         assert_eq!(rows_into(BASE, SCREEN, past_the_end), None);
     }
 
